@@ -104,14 +104,41 @@ def _avatar(master, text=None, assistant=False):
         font=Fonts.ui(12, "bold"))
 
 
+KIND_TAG = {"image": "IMG", "pdf": "PDF", "docx": "DOC", "xlsx": "XLS", "notebook": "NB",
+            "code": "</>", "text": "TXT"}
+
+
 class UserMessage(ctk.CTkFrame):
-    def __init__(self, master, text):
+    def __init__(self, master, text, attachments=None, notes=None):
         super().__init__(master, fg_color="transparent")
         self.grid_columnconfigure(1, weight=1)
         initial = (os.getenv("USERNAME") or "You")[0].upper()
         _avatar(self, initial).grid(row=0, column=0, sticky="n", padx=(0, 12))
-        self.body = AutoText(self, text, text_color=C["text"])
-        self.body.grid(row=0, column=1, sticky="ew", pady=(3, 0))
+        col = ctk.CTkFrame(self, fg_color="transparent")
+        col.grid(row=0, column=1, sticky="ew")
+        col.grid_columnconfigure(0, weight=1)
+        r = 0
+        if text:
+            self.body = AutoText(col, text, text_color=C["text"])
+            self.body.grid(row=r, column=0, sticky="ew", pady=(3, 0))
+            r += 1
+        if attachments:
+            chips = ctk.CTkFrame(col, fg_color="transparent")
+            chips.grid(row=r, column=0, sticky="w", pady=(6 if text else 3, 0))
+            r += 1
+            for i, a in enumerate(attachments):
+                chip = ctk.CTkFrame(chips, fg_color=C["card"], corner_radius=8,
+                                    border_width=1, border_color=C["border"])
+                chip.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 6), pady=(0, 4))
+                ctk.CTkLabel(chip, text=KIND_TAG.get(a.get("kind"), "FILE"), font=Fonts.mono(10, "bold"),
+                             text_color=C["accent_hi"], width=30).pack(side="left", padx=(8, 2), pady=4)
+                label = a.get("name", "file") + (f" · {a['detail']}" if a.get("detail") else "")
+                ctk.CTkLabel(chip, text=label if len(label) <= 48 else label[:46] + "…",
+                             font=Fonts.ui(12), text_color=C["text2"]).pack(side="left", padx=(0, 10))
+        for note in notes or []:
+            ctk.CTkLabel(col, text="⚠ " + note, font=Fonts.ui(12), text_color=C["warn"], anchor="w",
+                         justify="left", wraplength=640).grid(row=r, column=0, sticky="w", pady=(4, 0))
+            r += 1
 
 
 class AssistantMessage(ctk.CTkFrame):
@@ -197,9 +224,9 @@ class ChatView(ctk.CTkFrame):
 
         right = ctk.CTkFrame(header, fg_color="transparent")
         right.grid(row=0, column=1, sticky="e", padx=20)
-        self.mode_pill = ctk.CTkLabel(right, text="", height=30, corner_radius=15,
-                                      fg_color=C["raised"], font=Fonts.ui(12), text_color=C["text2"])
-        self.mode_pill.pack(side="left", padx=(0, 8))
+        self.model_pill = ctk.CTkLabel(right, text="", height=30, corner_radius=15,
+                                       fg_color=C["raised"], font=Fonts.ui(12), text_color=C["text2"])
+        self.model_pill.pack(side="left", padx=(0, 8))
         self.panel_btn = ctk.CTkButton(
             right, text="Hide panel", width=96, height=32, corner_radius=8,
             fg_color="transparent", hover_color=C["raised"], border_width=1,
@@ -223,9 +250,12 @@ class ChatView(ctk.CTkFrame):
         self.title.configure(text=title)
         self.subtitle.configure(text=subtitle)
 
-    def set_mode(self, mode):
-        label = {"auto": "Auto", "local": "Local only", "cloud": "Cloud"}[mode]
-        self.mode_pill.configure(text=f"   Mode · {label}   ")
+    def set_model(self, route_name):
+        local = where(route_name) == "Local"
+        self.model_pill.configure(
+            text=f"   {model_label(route_name)} · {'on this laptop' if local else 'cloud'}   ",
+            fg_color=C["local_bg"] if local else C["cloud_bg"],
+            text_color=C["local_fg"] if local else C["cloud_fg"])
 
     def set_panel_visible(self, visible):
         self.panel_btn.configure(text="Hide panel" if visible else "Show panel")
@@ -243,7 +273,7 @@ class ChatView(ctk.CTkFrame):
         self.empty.grid(row=0, column=0, pady=(120, 0))
         ctk.CTkLabel(self.empty, text="What are we working on?", font=Fonts.ui(22, "bold"),
                      text_color=C["text"]).pack()
-        ctk.CTkLabel(self.empty, text="Pick a mode on the right, or just ask — Auto routes each prompt.",
+        ctk.CTkLabel(self.empty, text="Pick a model on the right. Attach files with 📎 or paste an image with Ctrl+V.",
                      font=Fonts.ui(13), text_color=C["muted"]).pack(pady=(6, 18))
         for s in self.SUGGESTIONS:
             ctk.CTkButton(self.empty, text=s, height=40, width=380, corner_radius=10,
@@ -258,8 +288,8 @@ class ChatView(ctk.CTkFrame):
         widget.grid(row=self._rows, column=0, sticky="ew", padx=28, pady=(22 if self._rows == 0 else 0, 22))
         self._rows += 1
 
-    def add_user(self, text):
-        msg = UserMessage(self.scroll, text)
+    def add_user(self, text, attachments=None, notes=None):
+        msg = UserMessage(self.scroll, text, attachments, notes)
         self._place(msg)
         self.scroll_to_bottom(force=True)
         return msg

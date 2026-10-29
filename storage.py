@@ -33,9 +33,45 @@ CREATE TABLE IF NOT EXISTS turns (
     meta     TEXT,
     stopped  INTEGER NOT NULL DEFAULT 0,
     at       REAL,
+    extra    TEXT,             -- JSON: attachments shown under the message
     PRIMARY KEY (conv_id, seq)
 );
 """
+
+
+def _turn_from_row(row):
+    t = {k: row[k] for k in row.keys() if k != "extra"}
+    t["stopped"] = bool(row["stopped"])
+    if row["extra"]:
+        try:
+            t.update(json.loads(row["extra"]))
+        except ValueError:
+            pass
+    return t
+
+
+def _extra(turn):
+    extra = {k: turn[k] for k in ("attachments", "notes") if turn.get(k)}
+    return json.dumps(extra, ensure_ascii=False) if extra else None
+
+
+def _strip_images(history):
+    """Images are kept in memory while the app runs (so you can ask follow-up
+    questions about them) but not written to disk: they'd make the database
+    huge. Each image is replaced by a short note."""
+    out = []
+    for m in history:
+        c = m.get("content")
+        if isinstance(c, list):
+            parts = []
+            for part in c:
+                if part.get("type") == "image_url":
+                    parts.append({"type": "text", "text": "[an image was attached here; images aren't kept after a restart]"})
+                else:
+                    parts.append(part)
+            m = {**m, "content": "\n\n".join(p["text"] for p in parts)}
+        out.append(m)
+    return out
 
 
 class Store:
@@ -43,11 +79,15 @@ class Store:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.path = path
         self._lock = threading.Lock()
-        self._db = sqlite3.connect(path, check_same_thread=False)
+        # timeout: wait (instead of failing) if the other program is mid-write
+        self._db = sqlite3.connect(path, check_same_thread=False, timeout=10)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.execute("PRAGMA journal_mode = WAL")  # lets another process read while we write
         self._db.executescript(SCHEMA)
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(turns)")}
+        if "extra" not in cols:  # databases made by the first version
+            self._db.execute("ALTER TABLE turns ADD COLUMN extra TEXT")
         self._db.commit()
 
     def load_all(self):
@@ -59,15 +99,37 @@ class Store:
             out = []
             for c in convs:
                 turns = self._db.execute(
-                    "SELECT role, text, route, meta, stopped, at FROM turns "
+                    "SELECT role, text, route, meta, stopped, at, extra FROM turns "
                     "WHERE conv_id = ? ORDER BY seq", (c["id"],)).fetchall()
                 out.append({
                     "id": c["id"], "title": c["title"], "created": c["created"],
                     "updated": c["updated"], "history": json.loads(c["history"]),
-                    "turns": [{k: t[k] for k in t.keys()} | {"stopped": bool(t["stopped"])}
-                              for t in turns],
+                    "turns": [_turn_from_row(t) for t in turns],
                 })
             return out
+
+    def get(self, conv_id):
+        """One conversation, or None."""
+        for c in self.load_all():  # small data; keeps one code path for reading
+            if c["id"] == conv_id:
+                return c
+        return None
+
+    def list(self):
+        """Titles only, most recently used first (for the phone's chat list)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT c.id, c.title, c.updated, "
+                "(SELECT text FROM turns t WHERE t.conv_id = c.id ORDER BY seq DESC LIMIT 1) AS last "
+                "FROM conversations c ORDER BY c.updated DESC").fetchall()
+            return [dict(r) for r in rows]
+
+    def last_change(self):
+        """(newest update time, number of chats) — cheap way to notice that
+        another program (the phone server) changed something."""
+        with self._lock:
+            r = self._db.execute("SELECT MAX(updated), COUNT(*) FROM conversations").fetchone()
+            return (r[0] or 0.0, r[1])
 
     def save(self, conv_id, title, history, turns, created=None):
         """Write one conversation (insert or replace). Conversations are small,
@@ -78,13 +140,15 @@ class Store:
                 "INSERT INTO conversations (id, title, history, created, updated) "
                 "VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
                 "title = excluded.title, history = excluded.history, updated = excluded.updated",
-                (conv_id, title, json.dumps(history, ensure_ascii=False), created or now, now))
+                (conv_id, title, json.dumps(_strip_images(history), ensure_ascii=False),
+                 created or now, now))
             self._db.execute("DELETE FROM turns WHERE conv_id = ?", (conv_id,))
             self._db.executemany(
-                "INSERT INTO turns (conv_id, seq, role, text, route, meta, stopped, at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO turns (conv_id, seq, role, text, route, meta, stopped, at, extra) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [(conv_id, i, t["role"], t["text"], t.get("route"), t.get("meta"),
-                  int(bool(t.get("stopped"))), t.get("at")) for i, t in enumerate(turns)])
+                  int(bool(t.get("stopped"))), t.get("at"),
+                  _extra(t)) for i, t in enumerate(turns)])
 
     def delete(self, conv_id):
         with self._lock, self._db:

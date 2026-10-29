@@ -1,24 +1,26 @@
-"""Right panel: Run (mode, model, why-this-route, timings), Log, Settings."""
+"""Right panel: Run (model picker, last reply, timings), Log, Settings (incl. Access)."""
+import os
 import time
+from tkinter import filedialog
 
 import customtkinter as ctk
 
 from .theme import C, Fonts, MODEL_INFO, section_label
 
-MODE_HINTS = {
-    "auto": "Each prompt is classified (embeddings, with keyword rules as backup). "
-            "Code → Qwen Coder, complex → Gemini, simple → Llama. Personal data always stays local.",
-    "local": "Everything stays on this laptop: code → Qwen Coder, everything else → Llama 3.1 8B.",
-    "cloud": "Complex → Gemini, quick questions and code → Groq. Falls back to Llama 3.1 8B on errors.",
-}
+MODEL_HINT = ("You choose the model; nothing is routed automatically. Local models run on "
+              "this laptop. Cloud models send your message to Google or Groq.")
 
 
 class Inspector(ctk.CTkFrame):
-    def __init__(self, master, on_mode, on_model, on_setting, on_clear, env_info):
+    def __init__(self, master, on_model, on_setting, on_clear, env_info, settings=None, gate=None,
+                 data_dir=None):
         super().__init__(master, width=330, corner_radius=0, fg_color=C["panel"])
         self.grid_propagate(False)
-        self.on_mode = on_mode
         self.on_model = on_model
+        self.on_setting = on_setting
+        self.settings = settings
+        self.gate = gate
+        self.data_dir = data_dir
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
@@ -66,28 +68,16 @@ class Inspector(ctk.CTkFrame):
         pad = {"padx": 12, "sticky": "ew"}
         p.grid_columnconfigure(0, weight=1)
 
-        section_label(p, "Mode").grid(row=0, column=0, pady=(14, 6), **pad)
-        self.mode_btn = ctk.CTkSegmentedButton(
-            p, values=["Auto", "Local", "Cloud"], height=36, corner_radius=8,
-            font=Fonts.ui(13, "bold"), fg_color=C["bg"], selected_color=C["accent_sel"],
-            selected_hover_color=C["accent_sel"], unselected_color=C["bg"],
-            unselected_hover_color=C["raised"], text_color=C["accent_hi"],
-            command=lambda v: self.on_mode(v.lower()))
-        self.mode_btn.grid(row=1, column=0, **pad)
-        self.mode_btn.set("Auto")
-        self.mode_hint = ctk.CTkLabel(p, text=MODE_HINTS["auto"], font=Fonts.ui(12),
-                                      text_color=C["muted"], wraplength=280, justify="left", anchor="w")
-        self.mode_hint.grid(row=2, column=0, pady=(8, 0), **pad)
-
-        section_label(p, "Model").grid(row=3, column=0, pady=(20, 6), **pad)
-        self.model_var = ctk.StringVar(value="auto")
+        section_label(p, "Model").grid(row=0, column=0, pady=(14, 6), **pad)
+        ctk.CTkLabel(p, text=MODEL_HINT, font=Fonts.ui(12), text_color=C["muted"], wraplength=280,
+                     justify="left", anchor="w").grid(row=1, column=0, pady=(0, 8), **pad)
+        self.model_var = ctk.StringVar(value="local-general")
         self._model_rows = {}
-        options = [("auto", "Let the router decide", "Follows the mode's rules", "")]
-        options += [(k, v["name"], v["desc"], v["where"]) for k, v in MODEL_INFO.items()]
+        options = [(k, v["name"], v["desc"], v["where"]) for k, v in MODEL_INFO.items()]
         for i, (key, name, desc, where) in enumerate(options):
             row = ctk.CTkFrame(p, fg_color=C["card"], corner_radius=10, border_width=1,
                                border_color=C["border"])
-            row.grid(row=4 + i, column=0, pady=3, **pad)
+            row.grid(row=2 + i, column=0, pady=3, **pad)
             row.grid_columnconfigure(0, weight=1)
             rb = ctk.CTkRadioButton(
                 row, text=name, value=key, variable=self.model_var, font=Fonts.ui(13),
@@ -98,15 +88,14 @@ class Inspector(ctk.CTkFrame):
             rb.grid(row=0, column=0, sticky="w", padx=12, pady=(9, 0))
             d = ctk.CTkLabel(row, text=desc, font=Fonts.ui(11), text_color=C["muted"], height=14)
             d.grid(row=1, column=0, sticky="w", padx=(40, 12), pady=(0, 9))
-            if where:
-                local = where == "Local"
-                ctk.CTkLabel(row, text=f" {where} ", height=20, corner_radius=5, font=Fonts.ui(11),
-                             fg_color=C["local_bg"] if local else C["cloud_bg"],
-                             text_color=C["local_fg"] if local else C["cloud_fg"]
-                             ).grid(row=0, column=1, rowspan=2, padx=12)
+            local = where == "Local"
+            ctk.CTkLabel(row, text=f" {where} ", height=20, corner_radius=5, font=Fonts.ui(11),
+                         fg_color=C["local_bg"] if local else C["cloud_bg"],
+                         text_color=C["local_fg"] if local else C["cloud_fg"]
+                         ).grid(row=0, column=1, rowspan=2, padx=12)
             self._model_rows[key] = (row, rb, where)
 
-        section_label(p, "Why this route").grid(row=10, column=0, pady=(20, 6), **pad)
+        section_label(p, "Last reply").grid(row=10, column=0, pady=(20, 6), **pad)
         card = ctk.CTkFrame(p, fg_color=C["card"], corner_radius=12, border_width=1,
                             border_color=C["border"])
         card.grid(row=11, column=0, **pad)
@@ -114,7 +103,7 @@ class Inspector(ctk.CTkFrame):
         self.route_model = ctk.CTkLabel(card, text="No messages yet", font=Fonts.ui(13, "bold"),
                                         text_color=C["accent_hi"], anchor="w")
         self.route_model.grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(12, 0))
-        self.route_reason = ctk.CTkLabel(card, text="Send a prompt to see which model handles it and why.",
+        self.route_reason = ctk.CTkLabel(card, text="Send a message to see which model answered and how fast.",
                                          font=Fonts.ui(12), text_color="#DADDE2", wraplength=270,
                                          justify="left", anchor="w")
         self.route_reason.grid(row=1, column=0, columnspan=3, sticky="w", padx=14, pady=(4, 10))
@@ -135,20 +124,12 @@ class Inspector(ctk.CTkFrame):
         return p
 
     def _pick_model(self, key):
-        self.on_model(None if key == "auto" else key)
+        self._highlight_model()
+        self.on_model(key)
 
-    def set_mode(self, mode):
-        """Grey out models the mode doesn't allow, and reset an invalid pick."""
-        self.mode_btn.set(mode.capitalize())
-        self.mode_hint.configure(text=MODE_HINTS[mode])
-        for key, (row, rb, where) in self._model_rows.items():
-            allowed = (not where or mode == "auto" or
-                       (mode == "local" and where == "Local") or (mode == "cloud" and where == "Cloud"))
-            rb.configure(state="normal" if allowed else "disabled")
-            row.configure(border_color=C["border"])
-            if not allowed and self.model_var.get() == key:
-                self.model_var.set("auto")
-                self._pick_model("auto")
+    def set_model(self, key):
+        """Show `key` as selected (without calling on_model)."""
+        self.model_var.set(key)
         self._highlight_model()
 
     def _highlight_model(self):
@@ -197,41 +178,156 @@ class Inspector(ctk.CTkFrame):
     def _build_settings(self, on_setting, on_clear, env_info):
         p = self._page()
         p.grid_columnconfigure(0, weight=1)
-        r = 0
+        self._settings_page = p
+        self._r = 0
+        st = self.settings
 
-        def switch(label, desc, key, default=True):
-            nonlocal r
+        def row_next():
+            self._r += 1
+            return self._r - 1
+
+        def switch(label, desc, getter, setter):
             row = ctk.CTkFrame(p, fg_color="transparent")
-            row.grid(row=r, column=0, sticky="ew", padx=12, pady=(12, 0))
+            row.grid(row=row_next(), column=0, sticky="ew", padx=12, pady=(12, 0))
             row.grid_columnconfigure(0, weight=1)
             ctk.CTkLabel(row, text=label, font=Fonts.ui(13), text_color=C["text"], anchor="w",
                          height=18).grid(row=0, column=0, sticky="w")
             ctk.CTkLabel(row, text=desc, font=Fonts.ui(11), text_color=C["muted"], anchor="w",
-                         height=14).grid(row=1, column=0, sticky="w")
-            var = ctk.BooleanVar(value=default)
+                         height=14, wraplength=230, justify="left").grid(row=1, column=0, sticky="w")
+            var = ctk.BooleanVar(value=getter())
             ctk.CTkSwitch(row, text="", variable=var, width=44, progress_color=C["accent"],
                           button_color=C["text"], fg_color=C["border2"],
-                          command=lambda: on_setting(key, var.get())).grid(row=0, column=1, rowspan=2)
-            r += 1
+                          command=lambda: setter(var.get())).grid(row=0, column=1, rowspan=2)
 
-        section_label(p, "Display").grid(row=r, column=0, sticky="ew", padx=12, pady=(14, 0)); r += 1
-        switch("Show routing details", "Model, place and timing above each reply", "show_meta")
-        switch("Auto-scroll", "Follow the reply while it streams", "autoscroll")
+        def label(text, pady=(22, 4)):
+            section_label(p, text).grid(row=row_next(), column=0, sticky="ew", padx=12, pady=pady)
 
-        section_label(p, "Connections").grid(row=r, column=0, sticky="ew", padx=12, pady=(22, 4)); r += 1
-        for label, value in env_info:
+        def note(text):
+            ctk.CTkLabel(p, text=text, font=Fonts.ui(11), text_color=C["muted"], wraplength=280,
+                         justify="left", anchor="w").grid(row=row_next(), column=0, sticky="ew",
+                                                         padx=12, pady=(6, 0))
+
+        label("Display", pady=(14, 0))
+        switch("Show routing details", "Model, place and timing above each reply",
+               lambda: st.get("show_meta", True) if st else True, lambda v: on_setting("show_meta", v))
+        switch("Auto-scroll", "Follow the reply while it streams",
+               lambda: st.get("autoscroll", True) if st else True, lambda v: on_setting("autoscroll", v))
+
+        # ---- Access ----
+        if st and self.gate:
+            label("Access")
+            note("The assistant can only read files inside these folders. Secrets (.env, keys, "
+                 ".ssh) and system folders are always blocked.")
+            self._folder_frame = ctk.CTkFrame(p, fg_color="transparent")
+            self._folder_frame.grid(row=row_next(), column=0, sticky="ew", padx=12, pady=(8, 0))
+            self._folder_frame.grid_columnconfigure(0, weight=1)
+            self._render_folders()
+            ctk.CTkButton(p, text="+  Add folder", height=32, corner_radius=8, font=Fonts.ui(12),
+                          fg_color="transparent", hover_color=C["raised"], border_width=1,
+                          border_color=C["border2"], text_color=C["text2"],
+                          command=self._add_folder).grid(row=row_next(), column=0, sticky="w",
+                                                         padx=12, pady=(6, 0))
+            switch("Read files", "Attach and read files from the allowed folders",
+                   lambda: st.access.get("read_files", True), lambda v: st.set_access("read_files", v))
+            switch("Edit files", "Change files, always with your Apply first (coming next)",
+                   lambda: st.access.get("edit_files", True), lambda v: st.set_access("edit_files", v))
+
+            label("Files and the cloud")
+            note("When a message with files or images goes to Gemini or Groq:")
+            seg = ctk.CTkSegmentedButton(
+                p, values=["Ask each time", "Never send", "Always send"], height=32, corner_radius=8,
+                font=Fonts.ui(12), fg_color=C["bg"], selected_color=C["accent_sel"],
+                selected_hover_color=C["accent_sel"], unselected_color=C["bg"],
+                unselected_hover_color=C["raised"], text_color=C["accent_hi"],
+                command=lambda v: on_setting("cloud_files", {"Ask each time": "ask", "Never send": "block",
+                                                             "Always send": "allow"}[v]))
+            seg.grid(row=row_next(), column=0, sticky="ew", padx=12, pady=(6, 0))
+            seg.set({"ask": "Ask each time", "block": "Never send", "allow": "Always send"}
+                    .get(st.get("cloud_files", "ask"), "Ask each time"))
+
+            label("Context size")
+            note("How much text the local models can take in at once. Must match Ollama's "
+                 "OLLAMA_CONTEXT_LENGTH. 8192 suits a 6 GB GPU.")
+            menu = ctk.CTkOptionMenu(
+                p, values=["4096", "8192", "16384", "32768"], height=30, corner_radius=8,
+                font=Fonts.ui(12), fg_color=C["card"], button_color=C["raised"],
+                button_hover_color=C["border2"], text_color=C["text"],
+                command=lambda v: on_setting("context_tokens", int(v)))
+            menu.set(str(st.get("context_tokens", 8192)))
+            menu.grid(row=row_next(), column=0, sticky="w", padx=12, pady=(6, 0))
+
+        label("Connections")
+        for name, value in env_info:
             row = ctk.CTkFrame(p, fg_color="transparent")
-            row.grid(row=r, column=0, sticky="ew", padx=12, pady=3)
-            ctk.CTkLabel(row, text=label, font=Fonts.ui(12), text_color=C["text2"]).pack(side="left")
+            row.grid(row=row_next(), column=0, sticky="ew", padx=12, pady=3)
+            ctk.CTkLabel(row, text=name, font=Fonts.ui(12), text_color=C["text2"]).pack(side="left")
             ctk.CTkLabel(row, text=value, font=Fonts.mono(11), text_color=C["muted"]).pack(side="right")
-            r += 1
-        ctk.CTkLabel(p, text="Keys are read from .env. Cloud requests fall back to the local model on errors.",
-                     font=Fonts.ui(11), text_color=C["muted"], wraplength=280, justify="left",
-                     anchor="w").grid(row=r, column=0, sticky="ew", padx=12, pady=(6, 0)); r += 1
+        note("API keys are read from .env in the private data folder. If a cloud model fails, "
+             "the reply falls back to a local model.")
 
-        section_label(p, "Conversation").grid(row=r, column=0, sticky="ew", padx=12, pady=(22, 6)); r += 1
+        if self.data_dir:
+            label("Private data")
+            note(self.data_dir)
+            ctk.CTkButton(p, text="Open data folder", height=32, corner_radius=8, font=Fonts.ui(12),
+                          fg_color="transparent", hover_color=C["raised"], border_width=1,
+                          border_color=C["border2"], text_color=C["text2"],
+                          command=self._open_data_dir).grid(row=row_next(), column=0, sticky="w",
+                                                            padx=12, pady=(6, 0))
+
+        label("Conversation", pady=(22, 6))
         ctk.CTkButton(p, text="Clear this conversation", height=36, corner_radius=8,
                       fg_color="transparent", hover_color=C["stop_bg"], border_width=1,
                       border_color=C["stop_border"], text_color=C["stop_fg"], font=Fonts.ui(13),
-                      command=on_clear).grid(row=r, column=0, sticky="ew", padx=12, pady=(0, 14))
+                      command=on_clear).grid(row=row_next(), column=0, sticky="ew", padx=12, pady=(0, 14))
         return p
+
+    # ---------- access folders ----------
+    def _render_folders(self):
+        f = self._folder_frame
+        for w in f.winfo_children():
+            w.destroy()
+        folders = self.settings.access.get("folders", [])
+        if not folders:
+            ctk.CTkLabel(f, text="No folders allowed yet.", font=Fonts.ui(12), text_color=C["faint"],
+                         anchor="w").grid(row=0, column=0, sticky="w")
+        home = os.path.expanduser("~")
+        for i, folder in enumerate(folders):
+            row = ctk.CTkFrame(f, fg_color=C["card"], corner_radius=8, border_width=1,
+                               border_color=C["border"])
+            row.grid(row=i, column=0, sticky="ew", pady=2)
+            row.grid_columnconfigure(0, weight=1)
+            shown = folder.replace(home, "~", 1) if folder.startswith(home) else folder
+            if len(shown) > 34:
+                shown = "…" + shown[-33:]
+            ctk.CTkLabel(row, text=shown, font=Fonts.mono(11), text_color=C["text2"], anchor="w"
+                         ).grid(row=0, column=0, sticky="w", padx=10, pady=5)
+            ctk.CTkButton(row, text="✕", width=26, height=24, corner_radius=6, font=Fonts.ui(11),
+                          fg_color="transparent", hover_color=C["stop_bg"], text_color=C["muted"],
+                          command=lambda fo=folder: self._remove_folder(fo)
+                          ).grid(row=0, column=1, padx=4)
+
+    def _add_folder(self):
+        folder = filedialog.askdirectory(parent=self, title="Allow the assistant to read this folder")
+        if folder:
+            ok_reason = self.gate.blocked_reason(os.path.normcase(os.path.realpath(folder)))
+            if ok_reason:
+                self.add_log(f"not added: {ok_reason}", "warn")
+                return
+            self.gate.add_folder(os.path.normpath(folder))
+            self.add_log(f"access: added {os.path.normpath(folder)}")
+            self._render_folders()
+
+    def _remove_folder(self, folder):
+        self.gate.remove_folder(folder)
+        self.add_log(f"access: removed {folder}")
+        self._render_folders()
+
+    def refresh_access(self):
+        if self.gate:
+            self._render_folders()
+
+    def _open_data_dir(self):
+        try:
+            os.startfile(self.data_dir)  # Windows only
+        except Exception as e:
+            self.add_log(f"couldn't open the folder: {e}", "warn")

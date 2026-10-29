@@ -7,6 +7,11 @@ Threading model (the important part):
     `after()`, drains everything that arrived, and updates the UI once per
     batch. That keeps the window responsive and avoids scheduling one
     Tk callback per token.
+
+Privacy:
+    Chats, settings and API keys live in the private data folder
+    (%LOCALAPPDATA%\\HybridAI, see config.py), never in the project folder.
+    Every file the assistant reads passes access.AccessGate first.
 """
 import itertools
 import json
@@ -19,21 +24,45 @@ import uuid
 
 import customtkinter as ctk
 
-import router
-from router import stream_chat
-from storage import Store
-from ui.chat_view import ChatView
-from ui.composer import Composer
-from ui.inspector import Inspector
-from ui.sidebar import Sidebar
-from ui.theme import C, Fonts, model_label, where
+import config
+
+# Move data that older versions kept in the project folder BEFORE anything
+# reads it (router.py loads the API keys on import).
+try:
+    MIGRATION_NOTES = config.migrate_legacy()
+except Exception as _e:  # never stop the app over this; report it in the log
+    MIGRATION_NOTES = [f"could not move old data: {_e}"]
+
+import attachments  # noqa: E402
+import router  # noqa: E402
+from access import AccessGate  # noqa: E402
+from attachments import AttachError  # noqa: E402
+from router import stream_chat  # noqa: E402
+from settings import Settings  # noqa: E402
+from storage import Store  # noqa: E402
+from ui import dialogs  # noqa: E402
+from ui.chat_view import ChatView  # noqa: E402
+from ui.composer import Composer  # noqa: E402
+from ui.inspector import Inspector  # noqa: E402
+from ui.sidebar import Sidebar  # noqa: E402
+from ui.theme import C, Fonts, model_label, where  # noqa: E402
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 POLL_MS = 40
 HEALTH_EVERY_MS = 60_000
 LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # bypass system proxies
-DB_PATH = os.getenv("HYBRID_AI_DB", os.path.join(BASE_DIR, "data", "chats.db"))
-REQUIRED_LOCAL_MODELS = [m for m, c in router.MODELS.values() if c is router.local_client]
+DB_PATH = os.getenv("HYBRID_AI_DB", config.DB_PATH)
+# Models the app needs; the vision model is optional (only for images).
+REQUIRED_LOCAL_MODELS = [m for k, (m, c) in router.MODELS.items()
+                         if c is router.local_client and k != "local-vision"]
+VISION_KEY = "local-vision"
+FILE_TYPES = [
+    ("Supported files", " ".join("*" + e for e in sorted(attachments.TEXT_EXT | attachments.IMAGE_EXT |
+                                                        {".pdf", ".docx", ".xlsx", ".ipynb"}))),
+    ("Images", "*.png *.jpg *.jpeg *.webp *.gif *.bmp"),
+    ("Documents", "*.pdf *.docx *.xlsx *.txt *.md"),
+    ("All files", "*.*"),
+]
 
 
 class Conversation:
@@ -61,9 +90,13 @@ class HybridAIApp(ctk.CTk):
             pass  # .ico only works on Windows
 
         # ---- state ----
-        self.mode = "auto"
-        self.model_override = None
-        self.settings = {"show_meta": True, "autoscroll": True}
+        self.settings = Settings()
+        self.gate = AccessGate(self.settings)
+        self.model = self.settings.get("model")
+        if self.model not in router.MODELS:
+            self.model = router.DEFAULT_MODEL
+        self.pending = []            # attachments waiting in the composer
+        self.ollama_models = None    # names Ollama reported at the last health check
         self.events = queue.Queue()
         self.gen = None              # info about the reply currently streaming
         self.gen_ids = itertools.count(1)
@@ -77,7 +110,9 @@ class HybridAIApp(ctk.CTk):
         self._build()
         self._load_saved()
         self.new_chat()
-        self._set_mode("auto")
+        self._show_model()
+        for note in MIGRATION_NOTES:
+            self.inspector.add_log(note)
 
         self.bind_all("<Control-n>", lambda e: self.new_chat())
         self.bind_all("<Escape>", lambda e: self.stop())
@@ -102,7 +137,9 @@ class HybridAIApp(ctk.CTk):
         self.chat = ChatView(center, on_toggle_panel=self.toggle_panel,
                              on_suggestion=lambda t: self.composer.set_text(t))
         self.chat.grid(row=0, column=0, sticky="nsew")
-        self.composer = Composer(center, on_send=self.send, on_stop=self.stop)
+        self.composer = Composer(center, on_send=self.send, on_stop=self.stop,
+                                 on_attach=self.pick_files, on_paste=self.paste_from_clipboard,
+                                 on_remove_attachment=self.remove_attachment)
         self.composer.grid(row=1, column=0, sticky="ew")
 
         ollama_host = str(router.local_client.base_url).replace("/v1/", "").rstrip("/")
@@ -112,9 +149,10 @@ class HybridAIApp(ctk.CTk):
             ("Groq key", "set" if os.getenv("GROQ_API_KEY") else "missing"),
         ]
         self.ollama_host = ollama_host
-        self.inspector = Inspector(self, on_mode=self._set_mode, on_model=self._set_model,
+        self.inspector = Inspector(self, on_model=self._set_model,
                                    on_setting=self._set_setting, on_clear=self.clear_chat,
-                                   env_info=env_info)
+                                   env_info=env_info, settings=self.settings, gate=self.gate,
+                                   data_dir=config.DATA_DIR)
         self.inspector.grid(row=0, column=2, sticky="ns")
         self.panel_border = ctk.CTkFrame(self, width=1, corner_radius=0, fg_color=C["border"])
         self.panel_border.grid(row=0, column=2, sticky="nsw")
@@ -216,14 +254,14 @@ class HybridAIApp(ctk.CTk):
 
     def _render_active(self):
         conv = self.active
-        self.chat.show_meta = self.settings["show_meta"]
+        self.chat.show_meta = self.settings.get("show_meta", True)
         if not conv.turns:
             self.chat.show_empty_state()
         else:
             self.chat.clear()
             for t in conv.turns:
                 if t["role"] == "user":
-                    self.chat.add_user(t["text"])
+                    self.chat.add_user(t["text"], t.get("attachments"), t.get("notes"))
                 else:
                     msg = self.chat.add_assistant()
                     msg.append(t["text"])
@@ -245,39 +283,188 @@ class HybridAIApp(ctk.CTk):
         self.sidebar.set_chats(chats, self.active.id if self.active else None)
 
     # ================= settings from the panel =================
-    def _set_mode(self, mode):
-        self.mode = mode
-        self.inspector.set_mode(mode)
-        self.chat.set_mode(mode)
+    def _show_model(self):
+        self.inspector.set_model(self.model)
+        self.chat.set_model(self.model)
 
     def _set_model(self, key):
-        if key == self.model_override:
+        if key == self.model or key not in router.MODELS:
             return
-        self.model_override = key
-        self.inspector.add_log(f"model → {model_label(key) if key else 'router decides'}")
+        self.model = key
+        self.settings.set("model", key)
+        self.chat.set_model(key)
+        self.inspector.add_log(f"model → {model_label(key)} ({where(key).lower()})",
+                               "local" if where(key) == "Local" else "cloud")
 
     def _set_setting(self, key, value):
-        self.settings[key] = value
+        self.settings.set(key, value)
         if key == "show_meta" and not self.gen:
             self._render_active()
+
+    # ================= attachments =================
+    def pick_files(self):
+        if self.gen:
+            return
+        from tkinter import filedialog
+        paths = filedialog.askopenfilenames(parent=self, title="Attach files", filetypes=FILE_TYPES)
+        for p in paths:
+            self.attach_path(os.path.normpath(p))
+        self.composer.focus()
+
+    def paste_from_clipboard(self):
+        """Ctrl+V: attach a copied image or copied files. Returns True if it
+        handled the paste (otherwise the normal text paste happens)."""
+        if self.gen:
+            return False
+        try:
+            from PIL import ImageGrab
+            clip = ImageGrab.grabclipboard()
+        except Exception:
+            return False
+        if clip is None:
+            return False
+        if isinstance(clip, list):  # files copied in Explorer
+            files = [p for p in clip if isinstance(p, str) and os.path.isfile(p)]
+            for p in files:
+                self.attach_path(p, source="paste")
+            return bool(files)
+        try:
+            att = attachments.load_image(clip)
+        except Exception as e:
+            self.composer.show_notice(f"Couldn't paste the image: {e}", "err")
+            return True
+        self._add_pending(att)
+        return True
+
+    def attach_path(self, path, source="file"):
+        """Access check (asking if needed), then read the file. Returns True if attached."""
+        if any(a.path and os.path.normcase(a.path) == os.path.normcase(os.path.abspath(path))
+               for a in self.pending):
+            return True
+        ok, reason = self.gate.check(path, "read")
+        if not ok and self.gate.needs_prompt(reason):
+            choice = dialogs.ask(
+                self, "Allow access to this file?",
+                "This file is outside the folders the assistant may read. Allow it?",
+                [("once", "Allow once"), ("always", "Always allow this folder"), ("deny", "Deny")],
+                primary="once", detail=path)
+            if choice == "once":
+                self.gate.allow_once(path)
+            elif choice == "always":
+                self.gate.allow_always(path)
+                self.inspector.refresh_access()
+                self.inspector.add_log(f"access: added {os.path.dirname(path)}")
+            else:
+                self.composer.show_notice(f"Not attached: {os.path.basename(path)} (access denied)", "info")
+                return False
+            ok, reason = self.gate.check(path, "read")
+        if not ok:
+            self.composer.show_notice(f"Not attached: {reason}", "err")
+            self.inspector.add_log(f"blocked {os.path.basename(path)}: {reason}", "warn")
+            return False
+        self.composer.show_notice(f"Reading {os.path.basename(path)}…", "info", seconds=0)
+        self.update_idletasks()
+        try:
+            att = attachments.load_file(path, source=source)
+        except AttachError as e:
+            self.composer.show_notice(str(e), "err", seconds=12)
+            return False
+        except Exception as e:
+            self.composer.show_notice(f"Couldn't read {os.path.basename(path)}: {e}", "err", seconds=12)
+            return False
+        self.composer.hide_notice()
+        self._add_pending(att)
+        return True
+
+    def _add_pending(self, att):
+        self.pending.append(att)
+        self._show_pending()
+        self.inspector.add_log(f"attached {att.label()}")
+
+    def remove_attachment(self, index):
+        if 0 <= index < len(self.pending) and not self.gen:
+            self.pending.pop(index)
+            self._show_pending()
+
+    def _show_pending(self):
+        self.composer.set_attachments([(a.label(), a.kind) for a in self.pending])
+
+    def _check_before_send(self, atts):
+        """Decide which model gets this message, asking where needed.
+        Returns the model key, or None to cancel."""
+        model = self.model
+        images = [a for a in atts if a.is_image]
+        if images and model not in router.VISION_MODELS:
+            choice = dialogs.ask(
+                self, "This model can't see images",
+                f"{model_label(model)} reads text only. Send this message to "
+                f"{model_label(VISION_KEY)} (on this laptop) instead?",
+                [("vision", f"Use {model_label(VISION_KEY)}"), ("cancel", "Cancel")], primary="vision")
+            if choice != "vision":
+                return None
+            model = VISION_KEY
+        if model == VISION_KEY and self.ollama_models is not None:
+            vision_id = router.MODELS[VISION_KEY][0]
+            if vision_id not in self.ollama_models:
+                dialogs.info(self, "Vision model not installed",
+                             "Install it once in a terminal, then send again:",
+                             detail=f"ollama pull {vision_id}")
+                return None
+        if atts and where(model) == "Cloud":
+            policy = self.settings.get("cloud_files", "ask")
+            provider = "Google (Gemini)" if "gemini" in model else "Groq"
+            if images and model not in router.VISION_MODELS:
+                return None  # (unreachable: handled above)
+            if policy == "block":
+                self.composer.show_notice("Attachments only go to local models (Settings → Files and "
+                                          "the cloud). Pick a local model or change the setting.", "err", 10)
+                return None
+            if policy == "ask":
+                names = ", ".join(a.name for a in atts)
+                choice = dialogs.ask(
+                    self, f"Send files to {provider}?",
+                    f"{model_label(model)} is a cloud model. The contents of these attachments will "
+                    f"leave this laptop:", [("send", "Send"), ("cancel", "Cancel")],
+                    primary="cancel", detail=names)
+                if choice != "send":
+                    return None
+        return model
 
     # ================= sending & streaming =================
     def send(self, text):
         if self.gen:
             return
+        # Full file paths typed or pasted into the message are attached too.
+        for p in attachments.find_paths(text):
+            self.attach_path(p, source="path")
+        atts = list(self.pending)
+        if not text and not atts:
+            return
+        model = self._check_before_send(atts)
+        if model is None:
+            return  # cancelled; the text and attachments stay in the composer
+
+        content, notes = (attachments.build_message(text, atts, self.settings.get("context_tokens", 8192))
+                          if atts else (None, []))
         conv = self.active
         self.composer.clear()
+        self.pending = []
+        self._show_pending()
         if not conv.turns:
-            conv.title = text if len(text) <= 34 else text[:33].rstrip() + "…"
+            first = text or atts[0].name
+            conv.title = first if len(first) <= 34 else first[:33].rstrip() + "…"
             self._refresh_sidebar()
-        conv.turns.append({"role": "user", "text": text, "at": time.time()})
-        self.chat.add_user(text)
+        meta = [a.meta() for a in atts]
+        conv.turns.append({"role": "user", "text": text, "at": time.time(),
+                           "attachments": meta, "notes": notes})
+        self.chat.add_user(text, meta, notes)
+        for n in notes:
+            self.inspector.add_log(n, "warn")
 
-        # Routing may call the embedding model, so it runs in the worker thread
-        # and reports back through on_route instead of blocking the UI here.
         msg = self.chat.add_assistant()
-        msg.set_waiting(None)
-        self.inspector.set_route("Routing…", "Classifying the prompt.")
+        msg.set_waiting(model)
+        self.inspector.set_route(model_label(model), "Selected manually" if model == self.model else
+                                 "Switched to the vision model for this message")
         self.inspector.set_stats("…", "…", "…")
 
         gen_id = next(self.gen_ids)
@@ -289,15 +476,16 @@ class HybridAIApp(ctk.CTk):
         self.sidebar.set_enabled(False)
         self._update_header()
 
-        q, mode, override = self.events, self.mode, self.model_override
+        q = self.events
 
         def work():
             try:
-                stream_chat(conv.history, text, mode,
+                stream_chat(conv.history, text, "manual",
                             on_token=lambda tok: q.put((gen_id, "tok", tok)),
                             on_done=lambda r, why, ms: q.put((gen_id, "done", r, why, ms)),
                             on_route=lambda r, why: q.put((gen_id, "route", r, why)),
-                            model_override=override, should_stop=stop_event.is_set)
+                            model_override=model, should_stop=stop_event.is_set,
+                            content=content)
             except Exception as e:  # anything stream_chat didn't catch itself
                 q.put((gen_id, "tok", f"\n\nError: {e}"))
                 q.put((gen_id, "done", "local-general", "error before streaming", 0))
@@ -317,6 +505,8 @@ class HybridAIApp(ctk.CTk):
                 ev = self.events.get_nowait()
                 if ev[0] == "status":
                     statuses.append(ev[1:])
+                elif ev[0] == "models":
+                    self.ollama_models = ev[1]
                 elif self.gen and ev[0] == self.gen["id"]:
                     if ev[1] == "tok":
                         tokens.append(ev[2])
@@ -359,7 +549,7 @@ class HybridAIApp(ctk.CTk):
             g["first"] = now
             g["msg"].set_streaming(g["route"])
         g["text"] += text
-        follow = self.settings["autoscroll"] and self.chat.is_near_bottom()
+        follow = self.settings.get("autoscroll", True) and self.chat.is_near_bottom()
         g["msg"].append(text)
         if follow:
             self.chat.scroll_to_bottom(force=True)
@@ -420,6 +610,7 @@ class HybridAIApp(ctk.CTk):
             try:
                 with LOCAL_HTTP.open(f"{host}/api/tags", timeout=2) as r:
                     names = {m["name"] for m in json.load(r).get("models", [])}
+                q.put(("models", names))
                 missing = [m for m in REQUIRED_LOCAL_MODELS if m not in names]
                 if missing:
                     q.put(("status", "Ollama", "warn", f"missing {missing[0]}"))
@@ -430,11 +621,8 @@ class HybridAIApp(ctk.CTk):
             for name, var in (("Gemini", "GEMINI_API_KEY"), ("Groq", "GROQ_API_KEY")):
                 ok = bool(os.getenv(var))
                 q.put(("status", name, "ok" if ok else "err", "key set" if ok else "no key"))
-            # Embed the router's examples now, so the first prompt isn't slow.
-            if router.warmup():
-                q.put(("status", "Router", "ok", "embeddings"))
-            else:
-                q.put(("status", "Router", "warn", "keywords only"))
+            # Manual mode: the router's classifier isn't used, so it isn't loaded.
+            q.put(("status", "Router", "ok", "manual"))
 
         threading.Thread(target=work, daemon=True).start()
         self.after(HEALTH_EVERY_MS, self._health_check)

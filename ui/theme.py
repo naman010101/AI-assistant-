@@ -80,6 +80,7 @@ class Fonts:
 MODEL_INFO = {
     "local-general": {"name": "Llama 3.1 8B", "desc": "General chat, private", "where": "Local"},
     "local-coder": {"name": "Qwen Coder 7B", "desc": "Code, refactors", "where": "Local"},
+    "local-vision": {"name": "Qwen 2.5 VL 7B", "desc": "Sees images and screenshots", "where": "Local"},
     "cloud-gemini": {"name": "Gemini 2.0 Flash", "desc": "Long context, research", "where": "Cloud"},
     "cloud-groq": {"name": "Groq · Llama 3.3 70B", "desc": "Fast, high quality", "where": "Cloud"},
 }

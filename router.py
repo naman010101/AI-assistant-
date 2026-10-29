@@ -3,9 +3,9 @@ import os
 import time
 import threading
 from openai import OpenAI
-from dotenv import load_dotenv
+import config
 
-load_dotenv()
+config.load_env()  # API keys live in the private data folder (see config.py)
 
 # --- Clients ---
 local_client = OpenAI(
@@ -27,11 +27,20 @@ groq_client = OpenAI(
 MODELS = {
     "local-general": ("llama3.1:8b", local_client),
     "local-coder": ("qwen2.5-coder:7b", local_client),
+    "local-vision": ("qwen2.5vl:7b", local_client),   # can see images
     "cloud-gemini": ("gemini-2.0-flash", gemini_client),
     "cloud-groq": ("llama-3.3-70b-versatile", groq_client),
 }
 
-# --- Classification ---
+# Models that can read images. The others get text only.
+VISION_MODELS = {"local-vision", "cloud-gemini"}
+DEFAULT_MODEL = "local-general"
+
+# --- Classification (NOT USED by the app right now) ---
+#
+# The app is in manual mode: you pick the model, nothing is routed
+# automatically. The classifier below is kept for studying and for
+# eval_router.py; route() only uses it if called without a model.
 #
 # Routing happens in layers, cheapest and most certain first:
 #   1. PII regex            -> "private"  (a hard privacy rule, never learned)
@@ -148,10 +157,13 @@ def classify_prompt(prompt, use_embeddings=True):
     return classify_keywords(prompt), "keywords (embeddings unavailable)"
 
 
-def route(prompt, mode="auto", model_override=None):
-    # A model picked by hand in the UI wins over everything else.
+def route(prompt, mode="manual", model_override=None):
+    # Manual mode: the model you picked, or the local default. Nothing is
+    # sent to the cloud unless you chose a cloud model yourself.
     if model_override in MODELS:
         return model_override, "Selected manually"
+    if mode == "manual":
+        return DEFAULT_MODEL, "Default model"
 
     category, how = classify_prompt(prompt)
     model = POLICY.get(mode, POLICY["auto"])[category]
@@ -181,22 +193,47 @@ def _stream(client, model_id, messages, on_token, should_stop):
     return text, False
 
 
-def stream_chat(messages, prompt, mode="auto", on_token=None, on_done=None,
-                model_override=None, should_stop=None, on_route=None):
+def has_images(content):
+    return isinstance(content, list) and any(p.get("type") == "image_url" for p in content)
+
+
+def text_only(messages):
+    """A copy of the history with images replaced by a note, for models that
+    can't see images (sending them would fail or confuse the model)."""
+    out = []
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            texts = [p.get("text", "") if p.get("type") == "text" else
+                     "[an image was attached here, but this model can't see images]" for p in c]
+            m = {**m, "content": "\n\n".join(t for t in texts if t)}
+        out.append(m)
+    return out
+
+
+def for_model(route_name, messages):
+    return messages if route_name.split(" ")[0] in VISION_MODELS else text_only(messages)
+
+
+def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
+                model_override=None, should_stop=None, on_route=None, content=None):
+    """`content` (optional) is what the model receives for this turn: the
+    prompt plus attached file text, or a list of parts with images. Without
+    it, the plain prompt is sent."""
     route_name, reason = route(prompt, mode, model_override)
     if on_route:
         on_route(route_name, reason)
     model_id, client = MODELS[route_name]
 
     # Add the new user message to history
-    messages.append({"role": "user", "content": prompt})
+    messages.append({"role": "user", "content": content if content is not None else prompt})
 
     start = time.time()
     full_response = ""   # what the user sees
     answer = ""          # what is saved to history (no notices or errors)
 
     try:
-        answer, _ = _stream(client, model_id, messages, on_token, should_stop)
+        answer, _ = _stream(client, model_id, for_model(route_name, messages), on_token, should_stop)
         full_response = answer
 
     except Exception as e:
@@ -205,11 +242,12 @@ def stream_chat(messages, prompt, mode="auto", on_token=None, on_done=None,
             full_response = notice
             if on_token:
                 on_token(notice)
+            fallback = "local-vision" if has_images(messages[-1]["content"]) else "local-general"
             try:
-                answer, _ = _stream(local_client, "llama3.1:8b", messages,
-                                    on_token, should_stop)
+                answer, _ = _stream(local_client, MODELS[fallback][0],
+                                    for_model(fallback, messages), on_token, should_stop)
                 full_response += answer
-                route_name = "local-general (fallback)"
+                route_name = f"{fallback} (fallback)"
                 reason = f"{reason} → cloud error, fell back"
             except Exception as e2:
                 err = f"\n\nError: {str(e2)}"
