@@ -34,6 +34,7 @@ except Exception as _e:  # never stop the app over this; report it in the log
     MIGRATION_NOTES = [f"could not move old data: {_e}"]
 
 import attachments  # noqa: E402
+import editor  # noqa: E402
 import router  # noqa: E402
 from access import AccessGate  # noqa: E402
 from attachments import AttachError  # noqa: E402
@@ -43,6 +44,7 @@ from storage import Store  # noqa: E402
 from ui import dialogs  # noqa: E402
 from ui.chat_view import ChatView  # noqa: E402
 from ui.composer import Composer  # noqa: E402
+from ui.diff_view import DiffWindow  # noqa: E402
 from ui.inspector import Inspector  # noqa: E402
 from ui.sidebar import Sidebar  # noqa: E402
 from ui.theme import C, Fonts, model_label, where  # noqa: E402
@@ -97,6 +99,7 @@ class HybridAIApp(ctk.CTk):
             self.model = router.DEFAULT_MODEL
         self.pending = []            # attachments waiting in the composer
         self.ollama_models = None    # names Ollama reported at the last health check
+        self._edit_msgs = {}         # (conv id, turn index) -> message widget showing edit buttons
         self.events = queue.Queue()
         self.gen = None              # info about the reply currently streaming
         self.gen_ids = itertools.count(1)
@@ -113,6 +116,7 @@ class HybridAIApp(ctk.CTk):
         self._show_model()
         for note in MIGRATION_NOTES:
             self.inspector.add_log(note)
+        self.inspector.set_recent_edits(editor.recent_edits(8), self._undo_record)
 
         self.bind_all("<Control-n>", lambda e: self.new_chat())
         self.bind_all("<Escape>", lambda e: self.stop())
@@ -259,13 +263,16 @@ class HybridAIApp(ctk.CTk):
             self.chat.show_empty_state()
         else:
             self.chat.clear()
-            for t in conv.turns:
+            self._edit_msgs = {}
+            for i, t in enumerate(conv.turns):
                 if t["role"] == "user":
                     self.chat.add_user(t["text"], t.get("attachments"), t.get("notes"))
                 else:
                     msg = self.chat.add_assistant()
                     msg.append(t["text"])
                     msg.set_done(t["route"], t["meta"], t.get("stopped", False))
+                    if t.get("edits"):
+                        self._show_edits(conv, i, msg)
             self.after(120, self.chat.go_bottom)  # after every message has its final height
         self._update_header()
 
@@ -477,6 +484,9 @@ class HybridAIApp(ctk.CTk):
         self._update_header()
 
         q = self.events
+        edit_files = self._editable_files(conv)
+        system = editor.instructions(edit_files) if edit_files else None
+        self.gen["edit_files"], self.gen["user_text"] = edit_files, text
 
         def work():
             try:
@@ -485,7 +495,7 @@ class HybridAIApp(ctk.CTk):
                             on_done=lambda r, why, ms: q.put((gen_id, "done", r, why, ms)),
                             on_route=lambda r, why: q.put((gen_id, "route", r, why)),
                             model_override=model, should_stop=stop_event.is_set,
-                            content=content)
+                            content=content, system=system)
             except Exception as e:  # anything stream_chat didn't catch itself
                 q.put((gen_id, "tok", f"\n\nError: {e}"))
                 q.put((gen_id, "done", "local-general", "error before streaming", 0))
@@ -576,8 +586,17 @@ class HybridAIApp(ctk.CTk):
 
         g["msg"].set_done(route_name, meta, stopped)
         conv = g["conv"]
-        conv.turns.append({"role": "assistant", "text": g["text"], "route": route_name,
-                           "meta": meta, "stopped": stopped, "at": time.time()})
+        turn = {"role": "assistant", "text": g["text"], "route": route_name,
+                "meta": meta, "stopped": stopped, "at": time.time()}
+        if g.get("edit_files") and not stopped:
+            proposals = editor.extract(g["text"], g["edit_files"], g.get("user_text", ""))
+            if proposals:
+                turn["edits"] = proposals
+                for e in proposals:
+                    self.inspector.add_log(f"proposed change to {e['name']} (review it under the reply)")
+        conv.turns.append(turn)
+        if turn.get("edits"):
+            self._show_edits(conv, len(conv.turns) - 1, g["msg"])
         self._save(conv)  # the worker has finished touching conv.history by now
         if self.order and self.order[0] != conv.id:  # most recently used goes to the top
             self.order.remove(conv.id)
@@ -601,6 +620,147 @@ class HybridAIApp(ctk.CTk):
         self._refresh_sidebar()  # also re-enables the chat buttons
         self._update_header()
         self.composer.focus()
+
+    # ================= editing files =================
+    def _editable_files(self, conv):
+        """Files in this chat the model may propose changes to, with the
+        fingerprint the file should have now (updated after Apply / Undo)."""
+        if not self.settings.access.get("edit_files", True):
+            return []
+        files = {}
+        for t in conv.turns:
+            for a in t.get("attachments") or []:
+                if a.get("editable") and a.get("path"):
+                    files[a["path"]] = {"name": a["name"], "path": a["path"], "sha": a.get("sha")}
+            for e in t.get("edits") or []:
+                if e["path"] in files and e["status"] == "applied":
+                    files[e["path"]]["sha"] = e.get("applied_sha")
+                elif e["path"] in files and e["status"] == "undone":
+                    files[e["path"]]["sha"] = e.get("restored_sha")
+        return [f for f in files.values() if self.gate.check(f["path"], "edit")[0]]
+
+    def _show_edits(self, conv, turn_idx, msg):
+        self._edit_msgs[(conv.id, turn_idx)] = msg
+        msg.set_edits(conv.turns[turn_idx]["edits"],
+                      on_review=lambda k: self.review_edit(conv, turn_idx, k),
+                      on_undo=lambda k: self.undo_edit(conv, turn_idx, k))
+
+    def _refresh_edit_row(self, conv, turn_idx):
+        msg = self._edit_msgs.get((conv.id, turn_idx))
+        if msg is not None and self.active is conv:
+            try:
+                self._show_edits(conv, turn_idx, msg)
+            except Exception:
+                pass
+        self._save(conv)
+        self.inspector.set_recent_edits(editor.recent_edits(8), self._undo_record)
+
+    def review_edit(self, conv, turn_idx, k):
+        if self.gen:
+            return
+        e = conv.turns[turn_idx]["edits"][k]
+        ok, reason = self.gate.check(e["path"], "edit")
+        if not ok:
+            dialogs.info(self, "Can't edit this file", reason if reason != "outside" else
+                         "This file is outside the allowed folders (Settings → Access).", detail=e["path"])
+            return
+        try:
+            old, _, _ = editor.read_current(e["path"])
+        except OSError as ex:
+            dialogs.info(self, "Can't read the file", str(ex), detail=e["path"])
+            return
+        base = self._editable_files_sha(conv, e["path"], before_turn=turn_idx) or e.get("base_sha")
+        warnings = editor.checks(e["path"], old, e["new_text"], base)
+        rows = editor.diff_rows(old, e["new_text"])
+        DiffWindow(self, e["path"], rows, editor.stats(old, e["new_text"]), warnings,
+                   on_apply=lambda: self._apply_edit(conv, turn_idx, k),
+                   on_discard=lambda: self._discard_edit(conv, turn_idx, k),
+                   new_text=e["new_text"], title_name=e["name"])
+
+    def _editable_files_sha(self, conv, path, before_turn):
+        """The fingerprint the file had when this proposal was made."""
+        sha = None
+        for t in conv.turns[:before_turn]:
+            for a in t.get("attachments") or []:
+                if a.get("path") == path:
+                    sha = a.get("sha")
+            for e in t.get("edits") or []:
+                if e["path"] == path and e["status"] == "applied":
+                    sha = e.get("applied_sha")
+                elif e["path"] == path and e["status"] == "undone":
+                    sha = e.get("restored_sha")
+        return sha
+
+    def _apply_edit(self, conv, turn_idx, k):
+        e = conv.turns[turn_idx]["edits"][k]
+        ok, reason = self.gate.check(e["path"], "edit")
+        if not ok:
+            dialogs.info(self, "Can't edit this file", reason, detail=e["path"])
+            return
+        try:
+            record = editor.apply(e["path"], e["new_text"], conv.id)
+        except Exception as ex:
+            dialogs.info(self, "Couldn't write the file", str(ex), detail=e["path"])
+            return
+        e.update(status="applied", record=record, applied_sha=record["applied_sha"])
+        self.inspector.add_log(f"applied change to {e['name']} · backup: {record['backup']}", "local")
+        self.composer.show_notice(f"Applied to {e['name']}. A backup was saved; Undo is under the reply.", "ok")
+        self._refresh_edit_row(conv, turn_idx)
+
+    def _discard_edit(self, conv, turn_idx, k):
+        e = conv.turns[turn_idx]["edits"][k]
+        e["status"] = "discarded"
+        self.inspector.add_log(f"discarded change to {e['name']}")
+        self._refresh_edit_row(conv, turn_idx)
+
+    def undo_edit(self, conv, turn_idx, k):
+        e = conv.turns[turn_idx]["edits"][k]
+        if self._undo_record(e.get("record")):
+            e["status"] = "undone"
+            try:
+                e["restored_sha"] = editor.sha_file(e["path"])
+            except OSError:
+                pass
+            self._refresh_edit_row(conv, turn_idx)
+
+    def _undo_record(self, record):
+        """Restore a backup. Returns True if it was restored."""
+        if not record:
+            return False
+        try:
+            editor.undo(record)
+        except editor.EditError as ex:
+            if str(ex) != "changed-since":
+                dialogs.info(self, "Couldn't undo", str(ex), detail=record.get("path"))
+                return False
+            choice = dialogs.ask(
+                self, "The file changed after this edit",
+                "Undoing now puts back the version from before the edit, and your later changes to "
+                "the file would be lost (the current version is backed up first).",
+                [("undo", "Undo anyway"), ("cancel", "Cancel")], primary="cancel", detail=record["path"])
+            if choice != "undo":
+                return False
+            try:
+                editor.apply(record["path"], editor.read_current(record["path"])[0])  # back up current
+                editor.undo(record, force=True)
+            except Exception as ex2:
+                dialogs.info(self, "Couldn't undo", str(ex2), detail=record.get("path"))
+                return False
+        self.inspector.add_log(f"undone: {os.path.basename(record['path'])} restored from backup", "warn")
+        self.composer.show_notice(f"Undone: {os.path.basename(record['path'])} is back to before.", "ok")
+        self.inspector.set_recent_edits(editor.recent_edits(8), self._undo_record)
+        # mark the matching edit in any open chat as undone
+        for c in self.conversations.values():
+            for i, t in enumerate(c.turns):
+                for e in t.get("edits") or []:
+                    if (e.get("record") or {}).get("id") == record.get("id") and e["status"] == "applied":
+                        e["status"] = "undone"
+                        try:
+                            e["restored_sha"] = editor.sha_file(e["path"])
+                        except OSError:
+                            pass
+                        self._refresh_edit_row(c, i)
+        return True
 
     # ================= provider status =================
     def _health_check(self):

@@ -16,6 +16,7 @@ What can be read
 Access checks are NOT done here — the caller asks access.AccessGate first.
 """
 import base64
+import hashlib
 import io
 import json
 import os
@@ -62,6 +63,8 @@ class Attachment:
     image_url: str = None      # data: URL for images
     detail: str = ""           # "12 pages", "1280×720", "3 sheets"
     source: str = "file"       # file | paste | path
+    sha: str = None            # fingerprint of the file when attached (to spot later changes)
+    cut: bool = False          # True if only part of it fit in the message
 
     @property
     def is_image(self):
@@ -75,10 +78,15 @@ class Attachment:
             bits.append(human_size(self.size))
         return " · ".join(bits)
 
+    @property
+    def editable(self):
+        """Can the assistant propose changes to it? Only whole text/code files."""
+        return self.kind in ("code", "text") and bool(self.path) and not self.cut
+
     def meta(self):
         """What's saved with the chat (no file contents, no image data)."""
-        return {"name": self.name, "kind": self.kind, "path": self.path,
-                "size": self.size, "detail": self.detail}
+        return {"name": self.name, "kind": self.kind, "path": self.path, "size": self.size,
+                "detail": self.detail, "sha": self.sha, "editable": self.editable}
 
 
 def human_size(n):
@@ -136,7 +144,10 @@ def load_file(path, source="file"):
     if not text.strip():
         hint = " It may be a scanned PDF (no text layer); OCR comes in a later version." if ext == ".pdf" else ""
         raise AttachError(f"No readable text in {name}.{hint}")
-    return Attachment(name=name, kind=kind, path=path, size=size, text=text, detail=detail, source=source)
+    with open(path, "rb") as f:
+        sha = hashlib.sha256(f.read()).hexdigest()
+    return Attachment(name=name, kind=kind, path=path, size=size, text=text, detail=detail,
+                      source=source, sha=sha)
 
 
 def load_image(img, name=None):
@@ -324,11 +335,13 @@ def build_message(question, attachments, context_tokens=8192):
     for a, share in zip(texts, shares):
         body = a.text
         cut = ""
-        if len(body) > share:
+        a.cut = len(body) > share
+        if a.cut:
             body = body[:share]
             cut = f' note="cut: first {share:,} of {len(a.text):,} characters"'
             notes.append(f"{a.name} is long, so only the first {share / max(len(a.text), 1):.0%} "
-                         f"was included. Ask about a specific part, or raise the context size in Settings.")
+                         f"was included, so it can't be edited here. Ask about a specific part, or "
+                         f"raise the context size in Settings.")
         where = f' path="{a.path}"' if a.path else ""
         info = f' info="{a.detail}"' if a.detail else ""
         blocks.append(f'<file name="{a.name}"{where}{info}{cut}>\n{body}\n</file>')

@@ -211,15 +211,20 @@ def text_only(messages):
     return out
 
 
+def _with_system(system, messages):
+    return ([{"role": "system", "content": system}] + messages) if system else messages
+
+
 def for_model(route_name, messages):
     return messages if route_name.split(" ")[0] in VISION_MODELS else text_only(messages)
 
 
 def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
-                model_override=None, should_stop=None, on_route=None, content=None):
+                model_override=None, should_stop=None, on_route=None, content=None, system=None):
     """`content` (optional) is what the model receives for this turn: the
     prompt plus attached file text, or a list of parts with images. Without
-    it, the plain prompt is sent."""
+    it, the plain prompt is sent. `system` (optional) is an instruction sent
+    first but not stored in the history (e.g. how to propose file edits)."""
     route_name, reason = route(prompt, mode, model_override)
     if on_route:
         on_route(route_name, reason)
@@ -233,7 +238,8 @@ def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
     answer = ""          # what is saved to history (no notices or errors)
 
     try:
-        answer, _ = _stream(client, model_id, for_model(route_name, messages), on_token, should_stop)
+        answer, _ = _stream(client, model_id, _with_system(system, for_model(route_name, messages)),
+                            on_token, should_stop)
         full_response = answer
 
     except Exception as e:
@@ -245,7 +251,8 @@ def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
             fallback = "local-vision" if has_images(messages[-1]["content"]) else "local-general"
             try:
                 answer, _ = _stream(local_client, MODELS[fallback][0],
-                                    for_model(fallback, messages), on_token, should_stop)
+                                    _with_system(system, for_model(fallback, messages)),
+                                    on_token, should_stop)
                 full_response += answer
                 route_name = f"{fallback} (fallback)"
                 reason = f"{reason} → cloud error, fell back"

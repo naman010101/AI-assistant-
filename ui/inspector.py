@@ -229,8 +229,15 @@ class Inspector(ctk.CTkFrame):
                                                          padx=12, pady=(6, 0))
             switch("Read files", "Attach and read files from the allowed folders",
                    lambda: st.access.get("read_files", True), lambda v: st.set_access("read_files", v))
-            switch("Edit files", "Change files, always with your Apply first (coming next)",
+            switch("Edit files", "Let the assistant propose changes; nothing is written until you Apply",
                    lambda: st.access.get("edit_files", True), lambda v: st.set_access("edit_files", v))
+
+            label("Recent edits")
+            note("Every applied change is backed up first. Undo puts the old version back.")
+            self._edits_frame = ctk.CTkFrame(p, fg_color="transparent")
+            self._edits_frame.grid(row=row_next(), column=0, sticky="ew", padx=12, pady=(8, 0))
+            self._edits_frame.grid_columnconfigure(0, weight=1)
+            self.set_recent_edits([], None)
 
             label("Files and the cloud")
             note("When a message with files or images goes to Gemini or Groq:")
@@ -321,6 +328,37 @@ class Inspector(ctk.CTkFrame):
         self.gate.remove_folder(folder)
         self.add_log(f"access: removed {folder}")
         self._render_folders()
+
+    def set_recent_edits(self, records, on_undo):
+        f = getattr(self, "_edits_frame", None)
+        if f is None:
+            return
+        for w in f.winfo_children():
+            w.destroy()
+        if not records:
+            ctk.CTkLabel(f, text="No edits yet.", font=Fonts.ui(12), text_color=C["faint"],
+                         anchor="w").grid(row=0, column=0, sticky="w")
+            return
+        for i, r in enumerate(records):
+            row = ctk.CTkFrame(f, fg_color=C["card"], corner_radius=8, border_width=1,
+                               border_color=C["border"])
+            row.grid(row=i, column=0, sticky="ew", pady=2)
+            row.grid_columnconfigure(0, weight=1)
+            name = os.path.basename(r["path"])
+            when = r.get("time", "")[5:16].replace("T", " ")  # MM-DD HH:MM
+            ctk.CTkLabel(row, text=name if len(name) <= 22 else name[:21] + "…", font=Fonts.ui(12),
+                         text_color=C["text2"] if not r.get("undone") else C["faint"], anchor="w"
+                         ).grid(row=0, column=0, sticky="w", padx=(10, 4), pady=(5, 0))
+            ctk.CTkLabel(row, text=when, font=Fonts.mono(10), text_color=C["faint"], anchor="w"
+                         ).grid(row=1, column=0, sticky="w", padx=(10, 4), pady=(0, 5))
+            if r.get("undone"):
+                ctk.CTkLabel(row, text="undone", font=Fonts.ui(11), text_color=C["faint"]
+                             ).grid(row=0, column=1, rowspan=2, padx=10)
+            elif on_undo:
+                ctk.CTkButton(row, text="Undo", width=54, height=26, corner_radius=6, font=Fonts.ui(11),
+                              fg_color="transparent", hover_color=C["raised"], border_width=1,
+                              border_color=C["border2"], text_color=C["text2"],
+                              command=lambda rec=r: on_undo(rec)).grid(row=0, column=1, rowspan=2, padx=8)
 
     def refresh_access(self):
         if self.gate:

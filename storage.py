@@ -51,7 +51,7 @@ def _turn_from_row(row):
 
 
 def _extra(turn):
-    extra = {k: turn[k] for k in ("attachments", "notes") if turn.get(k)}
+    extra = {k: turn[k] for k in ("attachments", "notes", "edits") if turn.get(k)}
     return json.dumps(extra, ensure_ascii=False) if extra else None
 
 

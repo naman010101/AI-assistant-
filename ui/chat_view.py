@@ -162,6 +162,8 @@ class AssistantMessage(ctk.CTkFrame):
 
         self.body = AutoText(col, text_color="#DADDE2")
         self.body.grid(row=1, column=0, sticky="ew")
+        self._col = col
+        self.edit_row = None
 
     def set_streaming(self, route_name):
         self.pill.configure(text="  ● Streaming  ", fg_color=C["local_bg"], text_color=C["local_fg"])
@@ -193,6 +195,43 @@ class AssistantMessage(ctk.CTkFrame):
         self.body.append(text)
         self.body.highlight()
         self.body.fit()
+
+    def set_edits(self, edits, on_review, on_undo):
+        """One row per proposed file change. on_review(i) / on_undo(i)."""
+        if self.edit_row is not None:
+            self.edit_row.destroy()
+            self.edit_row = None
+        if not edits:
+            return
+        self.edit_row = ctk.CTkFrame(self._col, fg_color="transparent")
+        self.edit_row.grid(row=2, column=0, sticky="w", pady=(10, 2))
+        for i, e in enumerate(edits):
+            row = ctk.CTkFrame(self.edit_row, fg_color=C["card"], corner_radius=10, border_width=1,
+                               border_color=C["accent_border"] if e["status"] == "pending" else C["border"])
+            row.pack(anchor="w", pady=(0, 6))
+            status = e["status"]
+            text = {"pending": f"Proposed change to {e['name']}",
+                    "applied": f"✓ Applied to {e['name']}",
+                    "discarded": f"Discarded change to {e['name']}",
+                    "undone": f"↶ Undone: {e['name']} is back to before"}[status]
+            color = {"pending": C["text"], "applied": C["local_fg"], "discarded": C["muted"],
+                     "undone": C["muted"]}[status]
+            ctk.CTkLabel(row, text=text, font=Fonts.ui(13, "bold" if status == "pending" else "normal"),
+                         text_color=color).pack(side="left", padx=(14, 12), pady=8)
+            if status == "applied":
+                ctk.CTkButton(row, text="Undo", width=70, height=30, corner_radius=8, font=Fonts.ui(12),
+                              fg_color="transparent", hover_color=C["raised"], border_width=1,
+                              border_color=C["border2"], text_color=C["text2"],
+                              command=lambda k=i: on_undo(k)).pack(side="left", padx=(0, 10), pady=6)
+            else:
+                main = status == "pending"
+                ctk.CTkButton(row, text="Review changes" if main else "Review again", width=130, height=30,
+                              corner_radius=8, font=Fonts.ui(12, "bold" if main else "normal"),
+                              fg_color=C["accent"] if main else "transparent",
+                              hover_color=C["accent_hi"] if main else C["raised"],
+                              text_color=C["on_accent"] if main else C["text2"],
+                              border_width=0 if main else 1, border_color=C["border2"],
+                              command=lambda k=i: on_review(k)).pack(side="left", padx=(0, 10), pady=6)
 
 
 class ChatView(ctk.CTkFrame):
