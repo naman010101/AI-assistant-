@@ -1,0 +1,15 @@
+# never commit secrets or personal data
+.env
+*.env
+data/
+*.db
+*.db-wal
+*.db-shm
+phone_token.txt
+
+# generated
+venv/
+__pycache__/
+*.pyc
+.cache/
+.pytest_cache/
