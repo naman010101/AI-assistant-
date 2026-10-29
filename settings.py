@@ -34,6 +34,15 @@ DEFAULTS = {
     # When a message with files or images goes to a cloud model:
     # "ask" = confirm each time, "block" = never, "allow" = send.
     "cloud_files": "ask",
+    "memory": {
+        "enabled": True,           # search past-session summaries for context
+        "cloud": False,            # also send that context to cloud models
+        "k": 3,                    # at most this many summaries per message
+        "threshold": 0.55,         # how similar a summary must be (0-1)
+        "idle_minutes": 30,        # a chat untouched this long counts as ended
+    },
+    "memory_setup_done": False,    # the one-time question about chats saved before memory existed
+    "memory_keep_ids": [],         # chats you chose to keep in full
     "access": {
         "folders": None,           # None = the defaults from _default_folders()
         "read_files": True,

@@ -27,6 +27,7 @@ def _default_data_dir():
 
 DATA_DIR = os.path.abspath(os.getenv("HYBRID_AI_DATA_DIR") or _default_data_dir())
 DB_PATH = os.path.join(DATA_DIR, "chats.db")
+MEMORY_DB = os.path.join(DATA_DIR, "memory.db")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 ENV_PATH = os.path.join(DATA_DIR, ".env")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")

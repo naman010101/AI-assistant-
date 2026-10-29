@@ -196,6 +196,20 @@ class AssistantMessage(ctk.CTkFrame):
         self.body.highlight()
         self.body.fit()
 
+    def set_memory(self, used, on_open):
+        """used: list of dicts with id and title of the summaries given to the model."""
+        if not used:
+            return
+        row = ctk.CTkFrame(self._col, fg_color="transparent")
+        row.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        ctk.CTkLabel(row, text="◷ Used memory:", font=Fonts.ui(12), text_color=C["faint"]).pack(side="left")
+        for m in used:
+            t = m["title"] if len(m["title"]) <= 36 else m["title"][:35] + "…"
+            ctk.CTkButton(row, text=t, height=24, corner_radius=6, font=Fonts.ui(12), fg_color="transparent",
+                          hover_color=C["raised"], text_color=C["accent_hi"], border_width=1,
+                          border_color=C["accent_border"],
+                          command=lambda sid=m["id"]: on_open(sid)).pack(side="left", padx=(6, 0))
+
     def set_edits(self, edits, on_review, on_undo):
         """One row per proposed file change. on_review(i) / on_undo(i)."""
         if self.edit_row is not None:
@@ -332,6 +346,14 @@ class ChatView(ctk.CTkFrame):
         self._place(msg)
         self.scroll_to_bottom(force=True)
         return msg
+
+    def add_note(self, text):
+        frame = ctk.CTkFrame(self.scroll, fg_color=C["accent_bg"], corner_radius=10, border_width=1,
+                             border_color=C["accent_border"])
+        ctk.CTkLabel(frame, text="◷  " + text, font=Fonts.ui(12), text_color=C["accent_hi"], anchor="w",
+                     justify="left", wraplength=700).pack(fill="x", padx=14, pady=8)
+        self._place(frame)
+        return frame
 
     def add_assistant(self):
         msg = AssistantMessage(self.scroll, show_meta=self.show_meta)

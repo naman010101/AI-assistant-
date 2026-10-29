@@ -8,12 +8,15 @@ from .theme import C, Fonts, section_label
 
 
 class Sidebar(ctk.CTkFrame):
-    def __init__(self, master, on_new_chat, on_select_chat, on_delete_chat=None, icon_path=None):
+    def __init__(self, master, on_new_chat, on_select_chat, on_delete_chat=None, icon_path=None,
+                 on_open_memory=None, on_select_summary=None):
         super().__init__(master, width=232, corner_radius=0, fg_color=C["panel"],
                          border_width=0)
         self.grid_propagate(False)
         self.on_select_chat = on_select_chat
         self.on_delete_chat = on_delete_chat
+        self.on_open_memory = on_open_memory
+        self.on_select_summary = on_select_summary
         self._enabled = True
         self._chat_buttons = []
         self._status_rows = {}
@@ -45,7 +48,8 @@ class Sidebar(ctk.CTkFrame):
         nav = ctk.CTkFrame(self, fg_color="transparent")
         nav.grid(row=2, column=0, sticky="ew", padx=12)
         self._nav_item(nav, "Chats", active=True)
-        for name in ("Documents", "Memory", "Reminders"):
+        self._nav_item(nav, "Memory", command=on_open_memory)
+        for name in ("Documents", "Reminders"):
             self._nav_item(nav, name, soon=True)
 
         section_label(self, "Recent").grid(row=3, column=0, sticky="ew", padx=22, pady=(18, 4))
@@ -77,13 +81,26 @@ class Sidebar(ctk.CTkFrame):
         dot.configure(text_color={"ok": C["ok"], "warn": C["warn"], "err": C["err"]}.get(state, C["faint"]))
         value.configure(text=text)
 
-    def set_chats(self, chats, active_id):
-        """chats: list of (id, title), newest first."""
-        for b in self._chat_buttons:
-            b.destroy()
+    def set_chats(self, chats, active_id, summaries=None):
+        """chats: list of (id, title) or (id, title, state), newest first.
+        state "pending" = being summarised (shown greyed, not clickable).
+        summaries: list of (summary id, title, date text) for past sessions."""
+        for w in self.chat_list.winfo_children():
+            w.destroy()
         self._chat_buttons = []
-        for chat_id, title in chats:
+        self._pending_buttons = []
+        for item in chats:
+            chat_id, title = item[0], item[1]
+            state = item[2] if len(item) > 2 else "open"
             active = chat_id == active_id
+            if state == "pending":
+                b = ctk.CTkButton(self.chat_list, text=f"{title}  · summarising…", anchor="w", height=34,
+                                  corner_radius=8, font=Fonts.ui(12), text_color=C["faint"],
+                                  fg_color="transparent", hover_color=C["panel"], state="disabled",
+                                  text_color_disabled=C["faint"])
+                b.pack(fill="x", padx=6, pady=1)
+                self._pending_buttons.append(b)
+                continue
             b = ctk.CTkButton(
                 self.chat_list, text=title, anchor="w", height=36, corner_radius=8,
                 font=Fonts.ui(13), text_color=C["text"] if active else C["text2"],
@@ -95,6 +112,17 @@ class Sidebar(ctk.CTkFrame):
             if self.on_delete_chat:
                 b.bind("<Button-3>", lambda e, cid=chat_id: self._chat_menu(e, cid))
             self._chat_buttons.append(b)
+        if summaries:
+            ctk.CTkLabel(self.chat_list, text="PAST SESSIONS", font=Fonts.ui(11, "bold"),
+                         text_color=C["muted"], anchor="w").pack(fill="x", padx=16, pady=(14, 2))
+            for sid, title, when in summaries:
+                b = ctk.CTkButton(
+                    self.chat_list, text=f"◷  {title}", anchor="w", height=32, corner_radius=8,
+                    font=Fonts.ui(12), text_color=C["muted"], fg_color="transparent",
+                    hover_color=C["raised"],
+                    command=lambda s=sid: self.on_select_summary and self.on_select_summary(s))
+                b.pack(fill="x", padx=6, pady=0)
+                self._chat_buttons.append(b)
         self.set_enabled(self._enabled)
 
     def set_enabled(self, enabled):
@@ -127,7 +155,12 @@ class Sidebar(ctk.CTkFrame):
         return ctk.CTkLabel(master, text="H", width=30, height=30, corner_radius=9,
                             fg_color=C["accent"], text_color=C["on_accent"], font=Fonts.ui(14, "bold"))
 
-    def _nav_item(self, master, text, active=False, soon=False):
+    def _nav_item(self, master, text, active=False, soon=False, command=None):
+        if command:
+            ctk.CTkButton(master, text=text, anchor="w", height=36, corner_radius=8, font=Fonts.ui(13),
+                          fg_color="transparent", hover_color=C["raised"], text_color=C["text2"],
+                          command=command).pack(fill="x", pady=1)
+            return
         row = ctk.CTkFrame(master, height=36, corner_radius=8,
                            fg_color=C["raised"] if active else "transparent")
         row.pack(fill="x", pady=1)

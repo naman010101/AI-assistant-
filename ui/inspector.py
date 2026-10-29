@@ -13,7 +13,7 @@ MODEL_HINT = ("You choose the model; nothing is routed automatically. Local mode
 
 class Inspector(ctk.CTkFrame):
     def __init__(self, master, on_model, on_setting, on_clear, env_info, settings=None, gate=None,
-                 data_dir=None):
+                 data_dir=None, on_open_memory=None):
         super().__init__(master, width=330, corner_radius=0, fg_color=C["panel"])
         self.grid_propagate(False)
         self.on_model = on_model
@@ -21,6 +21,7 @@ class Inspector(ctk.CTkFrame):
         self.settings = settings
         self.gate = gate
         self.data_dir = data_dir
+        self.on_open_memory = on_open_memory
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
@@ -212,6 +213,29 @@ class Inspector(ctk.CTkFrame):
                lambda: st.get("show_meta", True) if st else True, lambda v: on_setting("show_meta", v))
         switch("Auto-scroll", "Follow the reply while it streams",
                lambda: st.get("autoscroll", True) if st else True, lambda v: on_setting("autoscroll", v))
+
+        # ---- Memory ----
+        if st:
+            mem = st.get("memory", {})
+
+            def set_mem(key, value):
+                m = dict(st.get("memory", {}))
+                m[key] = value
+                on_setting("memory", m)
+
+            label("Memory")
+            note("Each finished chat is summarised on this laptop and the full chat is deleted. "
+                 "Relevant summaries and facts about you are given to the model as you write.")
+            switch("Use memory", "Search past sessions for context",
+                   lambda: mem.get("enabled", True), lambda v: set_mem("enabled", v))
+            switch("Use memory with cloud models", "Off: memory only goes to local models",
+                   lambda: mem.get("cloud", False), lambda v: set_mem("cloud", v))
+            if self.on_open_memory:
+                ctk.CTkButton(p, text="Open Memory", height=32, corner_radius=8, font=Fonts.ui(12),
+                              fg_color="transparent", hover_color=C["raised"], border_width=1,
+                              border_color=C["border2"], text_color=C["text2"],
+                              command=self.on_open_memory).grid(row=row_next(), column=0, sticky="w",
+                                                                padx=12, pady=(8, 0))
 
         # ---- Access ----
         if st and self.gate:

@@ -13,6 +13,7 @@ Privacy:
     (%LOCALAPPDATA%\\HybridAI, see config.py), never in the project folder.
     Every file the assistant reads passes access.AccessGate first.
 """
+import copy
 import itertools
 import json
 import os
@@ -35,6 +36,7 @@ except Exception as _e:  # never stop the app over this; report it in the log
 
 import attachments  # noqa: E402
 import editor  # noqa: E402
+import memory  # noqa: E402
 import router  # noqa: E402
 from access import AccessGate  # noqa: E402
 from attachments import AttachError  # noqa: E402
@@ -45,6 +47,7 @@ from ui import dialogs  # noqa: E402
 from ui.chat_view import ChatView  # noqa: E402
 from ui.composer import Composer  # noqa: E402
 from ui.diff_view import DiffWindow  # noqa: E402
+from ui.memory_view import MemoryWindow  # noqa: E402
 from ui.inspector import Inspector  # noqa: E402
 from ui.sidebar import Sidebar  # noqa: E402
 from ui.theme import C, Fonts, model_label, where  # noqa: E402
@@ -100,6 +103,13 @@ class HybridAIApp(ctk.CTk):
         self.pending = []            # attachments waiting in the composer
         self.ollama_models = None    # names Ollama reported at the last health check
         self._edit_msgs = {}         # (conv id, turn index) -> message widget showing edit buttons
+        # memory
+        self.mem = None
+        self.embed = memory.ollama_embedder()
+        self.complete = memory.ollama_completer(router.MODELS["local-general"][0])
+        self.summarising = set()     # chats waiting for / being summarised
+        self.summary_failures = {}   # conv id -> failed attempts this run
+        self._summary_lock = threading.Lock()  # one summary at a time
         self.events = queue.Queue()
         self.gen = None              # info about the reply currently streaming
         self.gen_ids = itertools.count(1)
@@ -112,11 +122,14 @@ class HybridAIApp(ctk.CTk):
 
         self._build()
         self._load_saved()
+        self._open_memory_store()
         self.new_chat()
         self._show_model()
         for note in MIGRATION_NOTES:
             self.inspector.add_log(note)
         self.inspector.set_recent_edits(editor.recent_edits(8), self._undo_record)
+        self._refresh_sidebar()
+        self.after(600, self._memory_startup)
 
         self.bind_all("<Control-n>", lambda e: self.new_chat())
         self.bind_all("<Escape>", lambda e: self.stop())
@@ -130,7 +143,9 @@ class HybridAIApp(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
 
         self.sidebar = Sidebar(self, on_new_chat=self.new_chat, on_select_chat=self.select_chat,
-                               on_delete_chat=self.delete_chat, icon_path=os.path.join(BASE_DIR, "icon.png"))
+                               on_delete_chat=self.delete_chat, icon_path=os.path.join(BASE_DIR, "icon.png"),
+                               on_open_memory=lambda: self.open_memory(),
+                               on_select_summary=lambda sid: self.open_memory(sid))
         self.sidebar.grid(row=0, column=0, sticky="ns")
         ctk.CTkFrame(self, width=1, corner_radius=0, fg_color=C["border"]).grid(row=0, column=0, sticky="nse")
 
@@ -156,7 +171,7 @@ class HybridAIApp(ctk.CTk):
         self.inspector = Inspector(self, on_model=self._set_model,
                                    on_setting=self._set_setting, on_clear=self.clear_chat,
                                    env_info=env_info, settings=self.settings, gate=self.gate,
-                                   data_dir=config.DATA_DIR)
+                                   data_dir=config.DATA_DIR, on_open_memory=lambda: self.open_memory())
         self.inspector.grid(row=0, column=2, sticky="ns")
         self.panel_border = ctk.CTkFrame(self, width=1, corner_radius=0, fg_color=C["border"])
         self.panel_border.grid(row=0, column=2, sticky="nsw")
@@ -184,12 +199,15 @@ class HybridAIApp(ctk.CTk):
         self.select_chat(conv.id)
 
     def select_chat(self, conv_id):
-        if self.gen:
+        if self.gen or conv_id in self.summarising or conv_id not in self.conversations:
             return
+        previous = self.active
         self.active = self.conversations[conv_id]
         self._render_active()
         self._refresh_sidebar()
         self.composer.focus()
+        if previous is not None and previous is not self.active and previous.id in self.conversations:
+            self._end_session(previous)  # switching away = that session is over
 
     def clear_chat(self):
         if self.gen or not self.active:
@@ -209,10 +227,7 @@ class HybridAIApp(ctk.CTk):
         self.order.remove(conv_id)
         if self.active and self.active.id == conv_id:
             self.active = None
-            if self.order:
-                self.select_chat(self.order[0])
-            else:
-                self.new_chat()
+            self.new_chat()
         else:
             self._refresh_sidebar()
 
@@ -250,10 +265,13 @@ class HybridAIApp(ctk.CTk):
                 self.inspector.add_log(f"delete failed: {e}", "warn")
 
     def _on_close(self):
+        # The open chat stays saved; it is summarised the next time the app starts.
         if self.gen:
             self.gen["stop"].set()
         if self.store:
             self.store.close()
+        if self.mem:
+            self.mem.close()
         self.destroy()
 
     def _render_active(self):
@@ -265,7 +283,9 @@ class HybridAIApp(ctk.CTk):
             self.chat.clear()
             self._edit_msgs = {}
             for i, t in enumerate(conv.turns):
-                if t["role"] == "user":
+                if t["role"] == "note":
+                    self.chat.add_note(t["text"])
+                elif t["role"] == "user":
                     self.chat.add_user(t["text"], t.get("attachments"), t.get("notes"))
                 else:
                     msg = self.chat.add_assistant()
@@ -273,12 +293,14 @@ class HybridAIApp(ctk.CTk):
                     msg.set_done(t["route"], t["meta"], t.get("stopped", False))
                     if t.get("edits"):
                         self._show_edits(conv, i, msg)
+                    if t.get("memory"):
+                        msg.set_memory(t["memory"], self.open_memory)
             self.after(120, self.chat.go_bottom)  # after every message has its final height
         self._update_header()
 
     def _update_header(self):
         conv = self.active
-        n = len(conv.turns)
+        n = len([t for t in conv.turns if t["role"] in ("user", "assistant")])
         models = {t["route"].split(" ")[0] for t in conv.turns if t["role"] == "assistant"}
         sub = f"{n} message{'s' if n != 1 else ''}"
         if models:
@@ -286,8 +308,14 @@ class HybridAIApp(ctk.CTk):
         self.chat.set_title(conv.title, sub if n else "Start by typing below")
 
     def _refresh_sidebar(self):
-        chats = [(cid, self.conversations[cid].title) for cid in self.order]
-        self.sidebar.set_chats(chats, self.active.id if self.active else None)
+        chats = [(cid, self.conversations[cid].title, "pending" if cid in self.summarising else "open")
+                 for cid in self.order]
+        past = []
+        if self.mem:
+            for sm in self.mem.summaries(limit=40):
+                past.append((sm["id"], sm["title"],
+                             time.strftime("%d %b", time.localtime(sm.get("started") or sm["created"]))))
+        self.sidebar.set_chats(chats, self.active.id if self.active else None, past)
 
     # ================= settings from the panel =================
     def _show_model(self):
@@ -487,15 +515,31 @@ class HybridAIApp(ctk.CTk):
         edit_files = self._editable_files(conv)
         system = editor.instructions(edit_files) if edit_files else None
         self.gen["edit_files"], self.gen["user_text"] = edit_files, text
+        mem_cfg = self.settings.get("memory", {})
+        use_memory = bool(self.mem) and mem_cfg.get("enabled", True) and (
+            where(model) == "Local" or mem_cfg.get("cloud", False))
+        query = text or " ".join(a.name for a in atts)
 
         def work():
+            sys_text = system
+            if use_memory:
+                try:
+                    hits = self.mem.search(query, self.embed, k=int(mem_cfg.get("k", 3)),
+                                           threshold=float(mem_cfg.get("threshold", 0.55)))
+                    block = memory.context_block(hits, self.mem.user_facts())
+                    if block:
+                        sys_text = "\n\n".join(x for x in (block, system) if x)
+                    if hits:
+                        q.put((gen_id, "memory", [{"id": sm["id"], "title": sm["title"]} for _, sm in hits]))
+                except Exception as e:
+                    q.put(("log", f"memory search skipped ({type(e).__name__}: {e})", "warn"))
             try:
                 stream_chat(conv.history, text, "manual",
                             on_token=lambda tok: q.put((gen_id, "tok", tok)),
                             on_done=lambda r, why, ms: q.put((gen_id, "done", r, why, ms)),
                             on_route=lambda r, why: q.put((gen_id, "route", r, why)),
                             model_override=model, should_stop=stop_event.is_set,
-                            content=content, system=system)
+                            content=content, system=sys_text)
             except Exception as e:  # anything stream_chat didn't catch itself
                 q.put((gen_id, "tok", f"\n\nError: {e}"))
                 q.put((gen_id, "done", "local-general", "error before streaming", 0))
@@ -517,11 +561,19 @@ class HybridAIApp(ctk.CTk):
                     statuses.append(ev[1:])
                 elif ev[0] == "models":
                     self.ollama_models = ev[1]
+                elif ev[0] == "log":
+                    statuses.append(("__log__", ev[1], ev[2] if len(ev) > 2 else None))
+                elif ev[0] == "summarised":
+                    statuses.append(("__summarised__",) + tuple(ev[1:]))
+                elif ev[0] == "summary_failed":
+                    statuses.append(("__summary_failed__",) + tuple(ev[1:]))
                 elif self.gen and ev[0] == self.gen["id"]:
                     if ev[1] == "tok":
                         tokens.append(ev[2])
                     elif ev[1] == "route":
                         routed = ev[2:]
+                    elif ev[1] == "memory":
+                        self.gen["memory"] = ev[2]
                     else:
                         done = ev[2:]
                 # events from an older generation are ignored
@@ -529,8 +581,15 @@ class HybridAIApp(ctk.CTk):
             pass
 
         try:
-            for name, state, text in statuses:
-                self.sidebar.set_status(name, state, text)
+            for st in statuses:
+                if st[0] == "__log__":
+                    self.inspector.add_log(st[1], st[2])
+                elif st[0] == "__summarised__":
+                    self._on_summarised(*st[1:])
+                elif st[0] == "__summary_failed__":
+                    self._on_summary_failed(*st[1:])
+                else:
+                    self.sidebar.set_status(*st)
             if routed:
                 self._on_route(*routed)
             if tokens:
@@ -594,6 +653,9 @@ class HybridAIApp(ctk.CTk):
                 turn["edits"] = proposals
                 for e in proposals:
                     self.inspector.add_log(f"proposed change to {e['name']} (review it under the reply)")
+        if g.get("memory"):
+            turn["memory"] = g["memory"]
+            g["msg"].set_memory(g["memory"], self.open_memory)
         conv.turns.append(turn)
         if turn.get("edits"):
             self._show_edits(conv, len(conv.turns) - 1, g["msg"])
@@ -620,6 +682,140 @@ class HybridAIApp(ctk.CTk):
         self._refresh_sidebar()  # also re-enables the chat buttons
         self._update_header()
         self.composer.focus()
+
+    # ================= memory =================
+    def _open_memory_store(self):
+        try:
+            self.mem = memory.MemoryStore(config.MEMORY_DB)
+        except Exception as e:
+            self.mem = None
+            self.inspector.add_log(f"memory unavailable: {e}", "warn")
+
+    def _kept(self, conv_id):
+        return conv_id in set(self.settings.get("memory_keep_ids", []))
+
+    def _memory_startup(self):
+        """Chats saved before this start are finished sessions: summarise them.
+        The very first time, ask about chats from before memory existed."""
+        if not self.mem:
+            return
+        ended = [self.conversations[c] for c in self.order
+                 if self.conversations[c] is not self.active and self.conversations[c].turns
+                 and not self._kept(c)]
+        if not self.settings.get("memory_setup_done") and ended:
+            n = len(ended)
+            choice = dialogs.ask(
+                self, "Turn your saved chats into memory?",
+                f"You have {n} chat{'s' if n != 1 else ''} saved from before memory existed. Each can be "
+                f"replaced by a short summary the assistant remembers (the full chat is then deleted), "
+                f"or kept as a full chat that is never summarised.",
+                [("summarise", "Summarise them"), ("keep", "Keep them as full chats")], primary="summarise")
+            if choice != "summarise":
+                self.settings.set("memory_keep_ids", [c.id for c in ended])
+                self.inspector.add_log(f"kept {n} older chats in full (they won't be summarised)")
+                ended = []
+        self.settings.set("memory_setup_done", True)
+        for conv in ended:
+            self._end_session(conv)
+
+    def _end_session(self, conv):
+        """A chat is finished: summarise it, then delete the full chat. Kept
+        chats and the open chat are left alone."""
+        if (conv is self.active or conv.id in self.summarising or self._kept(conv.id)
+                or conv.id not in self.conversations or not self.mem):
+            return
+        if not conv.turns:
+            self._drop_conv(conv.id)
+            return
+        if not memory.worth_summarising(conv.turns):
+            self._forget(conv.id)
+            self._drop_conv(conv.id)
+            self.inspector.add_log(f"“{conv.title}” was too short to remember; deleted")
+            return
+        self.summarising.add(conv.id)
+        self._refresh_sidebar()
+        turns = copy.deepcopy(conv.turns)
+        started = next((t.get("at") for t in turns if t.get("at")), None)
+        q, conv_id, title = self.events, conv.id, conv.title
+
+        def job():
+            with self._summary_lock:
+                try:
+                    summary = memory.summarize(turns, self.complete)
+                    sid = self.mem.add_summary(conv_id, summary, self.embed, started=started,
+                                               embed_model=getattr(self.embed, "model", None))
+                    q.put(("summarised", conv_id, sid, summary["title"]))
+                except Exception as e:
+                    q.put(("summary_failed", conv_id, title, f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _on_summarised(self, conv_id, sid, title):
+        self.summarising.discard(conv_id)
+        self.summary_failures.pop(conv_id, None)
+        if conv_id in self.conversations and self.conversations[conv_id] is not self.active:
+            self._forget(conv_id)  # only now, with the summary safely saved
+            self._drop_conv(conv_id)
+        self.inspector.add_log(f"remembered: “{title}” (full chat deleted)", "local")
+        self._refresh_sidebar()
+
+    def _on_summary_failed(self, conv_id, title, error):
+        self.summarising.discard(conv_id)
+        self.summary_failures[conv_id] = self.summary_failures.get(conv_id, 0) + 1
+        self.inspector.add_log(f"couldn't summarise “{title}” yet ({error}); the full chat is kept "
+                               f"and it will be tried again", "warn")
+        self._refresh_sidebar()
+
+    def _retry_summaries(self):
+        for cid in list(self.order):
+            conv = self.conversations.get(cid)
+            if (conv and conv is not self.active and conv.turns and cid not in self.summarising
+                    and 0 < self.summary_failures.get(cid, 0) < 3):
+                self._end_session(conv)
+
+    def _check_idle(self):
+        idle = float(self.settings.get("memory", {}).get("idle_minutes", 30))
+        conv = self.active
+        if self.gen or not conv or not conv.turns or idle <= 0:
+            return
+        last = max((t.get("at") or 0) for t in conv.turns)
+        if last and time.time() - last > idle * 60:
+            self.inspector.add_log(f"“{conv.title}” idle for {idle:.0f} min: session ended")
+            self.new_chat()
+
+    def _drop_conv(self, conv_id):
+        self.conversations.pop(conv_id, None)
+        if conv_id in self.order:
+            self.order.remove(conv_id)
+
+    def open_memory(self, select=None):
+        if not self.mem:
+            dialogs.info(self, "Memory unavailable", "The memory database couldn't be opened; see the Log tab.")
+            return
+        MemoryWindow(self, self.mem, on_continue=self.continue_from, on_changed=self._refresh_sidebar,
+                     on_save_summary=self._save_summary_edit, select=select)
+
+    def _save_summary_edit(self, sid, title, data):
+        try:
+            self.mem.update_summary(sid, title, data, self.embed, getattr(self.embed, "model", None))
+        except Exception as e:
+            self.inspector.add_log(f"couldn't save the summary: {e}", "warn")
+        self._refresh_sidebar()
+
+    def continue_from(self, sid):
+        """Start a new chat that carries one past session's summary."""
+        if self.gen or not self.mem:
+            return
+        sm = self.mem.get_summary(sid)
+        if not sm:
+            return
+        conv = Conversation(title=sm["title"])
+        conv.history.append({"role": "system", "content": memory.context_block([(1.0, sm)], [])})
+        conv.turns.append({"role": "note", "at": time.time(),
+                           "text": f"Continuing from “{sm['title']}”. The assistant has that session's summary."})
+        self.conversations[conv.id] = conv
+        self.order.insert(0, conv.id)
+        self.select_chat(conv.id)
 
     # ================= editing files =================
     def _editable_files(self, conv):
@@ -765,6 +961,9 @@ class HybridAIApp(ctk.CTk):
     # ================= provider status =================
     def _health_check(self):
         q, host = self.events, self.ollama_host
+        self._check_idle()
+        self._retry_summaries()
+        mem, embed = self.mem, self.embed
 
         def work():
             try:
@@ -783,6 +982,13 @@ class HybridAIApp(ctk.CTk):
                 q.put(("status", name, "ok" if ok else "err", "key set" if ok else "no key"))
             # Manual mode: the router's classifier isn't used, so it isn't loaded.
             q.put(("status", "Router", "ok", "manual"))
+            if mem:  # summaries saved while the embedding model was unavailable
+                try:
+                    n = mem.embed_missing(embed, getattr(embed, "model", None))
+                    if n:
+                        q.put(("log", f"memory: indexed {n} summar{'ies' if n != 1 else 'y'} for search"))
+                except Exception:
+                    pass
 
         threading.Thread(target=work, daemon=True).start()
         self.after(HEALTH_EVERY_MS, self._health_check)
