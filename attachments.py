@@ -191,7 +191,7 @@ def _need(module, pip_name):
         return __import__(module)
     except ImportError:
         raise AttachError(f"Reading this needs the {pip_name} package. In the project folder run:\n"
-                          f"venv\\Scripts\\pip install {pip_name}") from None
+                          f"venv\\Scripts\\python -m pip install {pip_name}") from None
 
 
 def _read_pdf(path):
