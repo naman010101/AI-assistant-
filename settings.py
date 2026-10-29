@@ -38,7 +38,7 @@ DEFAULTS = {
         "enabled": True,           # search past-session summaries for context
         "cloud": False,            # also send that context to cloud models
         "k": 3,                    # at most this many summaries per message
-        "threshold": 0.55,         # how similar a summary must be (0-1)
+        "threshold": 0.5,          # how similar a summary must be (0-1); eval_memory.py suggests one
         "idle_minutes": 30,        # a chat untouched this long counts as ended
     },
     "memory_setup_done": False,    # the one-time question about chats saved before memory existed
@@ -70,9 +70,20 @@ class Settings:
         self.path = path or config.SETTINGS_PATH
         self._lock = threading.Lock()
         self.data = _merge(DEFAULTS, self._read())
+        self._upgrade()
         if self.data["access"]["folders"] is None:
             self.data["access"]["folders"] = _default_folders()
             self.save()
+
+    def _upgrade(self):
+        """Adjust values saved by older versions."""
+        v = self.data.get("settings_version", 0)
+        if v < 1:  # memory threshold default lowered from 0.55 to 0.5
+            if self.data.get("memory", {}).get("threshold") == 0.55:
+                self.data["memory"]["threshold"] = 0.5
+            self.data["settings_version"] = 1
+            if os.path.exists(self.path):
+                self.save()
 
     def _read(self):
         try:

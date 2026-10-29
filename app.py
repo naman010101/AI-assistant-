@@ -523,16 +523,7 @@ class HybridAIApp(ctk.CTk):
         def work():
             sys_text = system
             if use_memory:
-                try:
-                    hits = self.mem.search(query, self.embed, k=int(mem_cfg.get("k", 3)),
-                                           threshold=float(mem_cfg.get("threshold", 0.55)))
-                    block = memory.context_block(hits, self.mem.user_facts())
-                    if block:
-                        sys_text = "\n\n".join(x for x in (block, system) if x)
-                    if hits:
-                        q.put((gen_id, "memory", [{"id": sm["id"], "title": sm["title"]} for _, sm in hits]))
-                except Exception as e:
-                    q.put(("log", f"memory search skipped ({type(e).__name__}: {e})", "warn"))
+                sys_text = self._memory_context(query, mem_cfg, system, gen_id)
             try:
                 stream_chat(conv.history, text, "manual",
                             on_token=lambda tok: q.put((gen_id, "tok", tok)),
@@ -690,6 +681,43 @@ class HybridAIApp(ctk.CTk):
         except Exception as e:
             self.mem = None
             self.inspector.add_log(f"memory unavailable: {e}", "warn")
+
+    def _memory_context(self, query, mem_cfg, system, gen_id):
+        """Build the memory part of the system message (runs in the worker
+        thread). Facts are always included, even if the search fails."""
+        q = self.events
+        k = int(mem_cfg.get("k", 3))
+        threshold = float(mem_cfg.get("threshold", 0.5))
+        try:
+            facts = self.mem.user_facts()
+        except Exception as e:
+            facts = []
+            q.put(("log", f"memory: couldn't read facts ({e})", "warn"))
+        hits, best, note = [], None, ""
+        try:
+            scored = self.mem.search(query, self.embed, k=k, threshold=None)
+            best = scored[0][0] if scored else None
+            hits = [(sim, sm) for sim, sm in scored if sim >= threshold]
+        except Exception as e:
+            note = f"; search failed ({type(e).__name__}: {e})"
+        recall = memory.is_recall_question(query)
+        if recall:  # "do you remember…?" -> add the latest sessions too
+            have = {sm["id"] for _, sm in hits}
+            for sm in self.mem.recent():
+                if sm["id"] not in have and len(hits) < max(k, memory.RECENT_FOR_RECALL):
+                    hits.append((0.0, sm))
+        block = memory.context_block(hits, facts)
+        n_sum = self.mem.summaries()
+        indexed = sum(1 for sm in n_sum if sm["vector"])
+        q.put(("log", f"memory: {len(facts)} fact{'s' if len(facts) != 1 else ''}, "
+                      f"{len(hits)} session{'s' if len(hits) != 1 else ''} sent"
+                      + (f" (best match {best:.2f}, needs {threshold:.2f})" if best is not None else "")
+                      + (" · recall question: added recent sessions" if recall else "")
+                      + f" · {indexed}/{len(n_sum)} summaries searchable" + note,
+               "warn" if note or (n_sum and not indexed) else None))
+        if hits:
+            q.put((gen_id, "memory", [{"id": sm["id"], "title": sm["title"]} for _, sm in hits]))
+        return "\n\n".join(x for x in (block, system) if x) or None
 
     def _kept(self, conv_id):
         return conv_id in set(self.settings.get("memory_keep_ids", []))

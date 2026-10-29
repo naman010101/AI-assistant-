@@ -49,6 +49,20 @@ CREATE TABLE IF NOT EXISTS facts (
 """
 
 USER_FACTS_ALWAYS = 15      # newest facts about the user always included
+RECENT_FOR_RECALL = 3       # "do you remember…?" questions get the latest sessions
+
+# Questions about the past itself ("do you remember…", "what did we do last
+# time") have no topic of their own, so similarity search can't find anything.
+# For these, the most recent sessions are added.
+RECALL = re.compile(
+    r"\b(remember|recall|memory|memories|forgot|forget|last (time|session|chat|conversation)|"
+    r"previous(ly)?|earlier|before|yesterday|past (session|chat|conversation)s?|"
+    r"we (talked|discussed|did|worked|spoke|were)|you (said|told|suggested)|i (told|said|mentioned)|"
+    r"what do you know about me|who am i|my name|about me)\b", re.I)
+
+
+def is_recall_question(text):
+    return bool(RECALL.search(text or ""))
 MIN_CHARS_TO_SUMMARISE = 30  # a chat that's only "hi" isn't worth remembering
 
 
@@ -182,14 +196,18 @@ class MemoryStore:
         return [r["text"] for r in pinned] + [r["text"] for r in recent]
 
     # ---------- search ----------
+    def recent(self, n=RECENT_FOR_RECALL):
+        return self.summaries(limit=n)
+
     def search(self, query, embed_fn, k=3, threshold=0.55):
-        """Closest summaries to `query`: list of (similarity, summary)."""
+        """Closest summaries to `query`: list of (similarity, summary).
+        threshold=None returns the top k whatever their similarity."""
         rows = [s for s in self.summaries() if s["vector"]]
         if not rows or not query.strip():
             return []
         q = embed_fn([query], kind="query")[0]
         scored = sorted(((dot(q, s["vector"]), s) for s in rows), key=lambda x: -x[0])
-        return [(sim, s) for sim, s in scored[:k] if sim >= threshold]
+        return [(sim, s) for sim, s in scored[:k] if threshold is None or sim >= threshold]
 
     def close(self):
         with self._lock:
@@ -308,8 +326,11 @@ def context_block(hits, facts):
     """The system text that carries memory into a new message."""
     if not hits and not facts:
         return None
-    parts = ["Background from the user's earlier sessions with you. Use it only when it helps "
-             "answer; don't mention it otherwise, and never invent details beyond it."]
+    parts = ["You have a memory of earlier sessions with this user, kept by the app on their laptop. "
+             "The notes below come from it. They are true and about this user. If the user asks what "
+             "you remember, who they are, or about earlier sessions, answer from these notes: do NOT "
+             "say that you can't remember or that each conversation starts fresh. Otherwise use the "
+             "notes only where they help, and never invent details beyond them."]
     if facts:
         parts.append("What you know about the user:\n" + "\n".join(f"- {f}" for f in facts))
     for sim, s in hits:

@@ -123,3 +123,30 @@ def test_summarize_and_context_block():
     block = M.context_block([(0.8, {**s, "id": "x", "created": 0, "started": 0})], ["User's name is Naman"])
     assert "User's name is Naman" in block and "Venv basics" in block and "Left open: try python -m pip" in block
     assert M.context_block([], []) is None
+
+
+def test_recall_questions():
+    for q in ("do u remember our past session?", "what's my name?", "what did we do last time",
+              "you told me something earlier", "what do you know about me"):
+        assert M.is_recall_question(q), q
+    for q in ("write a bfs in python", "what is the capital of Australia?"):
+        assert not M.is_recall_question(q), q
+
+
+def test_context_block_says_it_has_memory():
+    block = M.context_block([], ["User's name is Naman"])
+    assert "do NOT" in block and "can't remember" in block and "User's name is Naman" in block
+
+
+def test_settings_upgrade_threshold(tmp_path, monkeypatch):
+    import importlib
+    monkeypatch.setenv("HYBRID_AI_DATA_DIR", str(tmp_path))
+    import config
+    importlib.reload(config)
+    import settings
+    importlib.reload(settings)
+    (tmp_path / "settings.json").write_text(json.dumps({"memory": {"threshold": 0.55}, "access": {"folders": []}}))
+    s = settings.Settings()
+    assert s.get("memory")["threshold"] == 0.5 and s.get("settings_version") == 1
+    s.set("memory", {**s.get("memory"), "threshold": 0.62})
+    assert settings.Settings().get("memory")["threshold"] == 0.62  # user's own value kept
