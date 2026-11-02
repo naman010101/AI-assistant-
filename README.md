@@ -149,3 +149,7 @@ venv\Scripts\python -m pip install winrt-runtime winrt-Windows.Media.Ocr winrt-W
 - [x] Android companion app
 - [ ] Reminders and daily brief
 - [ ] Internship kit
+
+## For AI agents
+
+Start with [`agent/README.md`](agent/README.md): plan with checkboxes, file map, decisions, runbook and session log.
