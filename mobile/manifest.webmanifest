@@ -1,0 +1,32 @@
+{
+  "name": "Hybrid AI",
+  "short_name": "Hybrid AI",
+  "description": "Your laptop's private AI assistant, on your phone.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0F1115",
+  "theme_color": "#0F1115",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        { "name": "files", "accept": ["image/*", "application/pdf", "text/*",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          ".pdf", ".docx", ".txt", ".md", ".py", ".ipynb", ".csv", ".json"] }
+      ]
+    }
+  }
+}

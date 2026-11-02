@@ -63,7 +63,7 @@ class Sidebar(ctk.CTkFrame):
         status = ctk.CTkFrame(self, fg_color=C["card"], corner_radius=10,
                               border_width=1, border_color=C["border"])
         status.grid(row=5, column=0, sticky="ew", padx=12, pady=12)
-        names = ("Ollama", "Gemini", "Groq", "Router")
+        names = ("Ollama", "Gemini", "Groq", "Phone")
         for name in names:
             row = ctk.CTkFrame(status, fg_color="transparent")
             row.pack(fill="x", padx=12, pady=(8 if name == names[0] else 2, 8 if name == names[-1] else 2))

@@ -49,6 +49,12 @@ DEFAULTS = {
         "never_apps": None,        # None = quickask.DEFAULT_NEVER (password managers)
         "whole_screen": False,     # capture only the active window by default
     },
+    "phone": {
+        "enabled": False,          # off until you turn it on in Settings → Phone
+        "port": 8765,
+        "lan": True,               # reachable over Wi-Fi/Tailscale IP; off = only via `tailscale serve`
+        "public_url": "",          # e.g. https://laptop.tail1234.ts.net from `tailscale serve`
+    },
     "code_projects": [],           # folders added in the Code window
     "code_last": None,
     "access": {

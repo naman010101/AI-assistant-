@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#0F1115">
+  <title>Hybrid AI</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Pairing: shown until this phone has the laptop's token -->
+  <section id="pair" class="pair" hidden>
+    <img src="icon-192.png" alt="" class="pair-logo">
+    <h1>Connect to your laptop</h1>
+    <ol>
+      <li>In the desktop app: Settings → Phone → turn on <b>Let my phone connect</b>.</li>
+      <li>Press <b>Pair a phone (QR)</b>.</li>
+      <li>Scan the QR code with this phone's camera.</li>
+    </ol>
+    <p class="muted">Or paste the pairing link here:</p>
+    <form id="pair-form">
+      <input id="pair-input" placeholder="http://…/#token=…" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="btn-accent">Connect</button>
+    </form>
+    <p id="pair-error" class="error" hidden></p>
+  </section>
+
+  <div id="app" class="app" hidden>
+    <header class="top">
+      <button id="menu-btn" class="icon-btn" aria-label="Chats">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+      </button>
+      <div class="title-wrap">
+        <div id="title" class="title">New conversation</div>
+        <div class="sub"><span id="conn-dot" class="dot"></span><span id="conn-text">connecting…</span></div>
+      </div>
+      <button id="model-btn" class="model" aria-label="Model">Llama 3.1 8B</button>
+      <button id="new-btn" class="icon-btn" aria-label="New chat">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </header>
+
+    <main id="messages" class="messages"></main>
+
+    <div id="empty" class="empty">
+      <img src="icon-192.png" alt="" class="empty-logo">
+      <h2>Ask your laptop anything</h2>
+      <p class="muted">Runs on your laptop's models, with your memory. Chats show up in the desktop app too.</p>
+      <div class="chips">
+        <button class="chip" data-send="/screenshot">Laptop screen</button>
+        <button class="chip" data-fill="/find ">Find a file</button>
+        <button class="chip" data-fill="/web ">Search the web</button>
+        <button class="chip" data-send="/status">Laptop status</button>
+      </div>
+    </div>
+
+    <footer class="composer">
+      <div id="attach-chips" class="attach-chips" hidden></div>
+      <div class="actions" id="actions">
+        <button class="chip small" data-send="/screenshot">Screen</button>
+        <button class="chip small" data-fill="/find ">Find</button>
+        <button class="chip small" data-fill="/web ">Web</button>
+        <button class="chip small" data-send="/help">Help</button>
+      </div>
+      <form id="form" class="input-row">
+        <button id="attach-btn" type="button" class="icon-btn small" aria-label="Attach">
+          <svg viewBox="0 0 24 24"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 01-7.8-7.8l8.6-8.6a3.7 3.7 0 015.2 5.2l-8.6 8.6a1.8 1.8 0 01-2.6-2.6l7.9-7.9"/></svg>
+        </button>
+        <input id="file-input" type="file" multiple hidden
+               accept="image/*,.pdf,.docx,.xlsx,.txt,.md,.csv,.json,.py,.ipynb,.js,.ts,.java,.c,.cpp,.html,.css,.sql">
+        <textarea id="input" rows="1" placeholder="Message your laptop…" enterkeyhint="send"></textarea>
+        <button id="send-btn" class="send" aria-label="Send">
+          <svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+        </button>
+        <button id="stop-btn" type="button" class="send stop" aria-label="Stop" hidden>
+          <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+        </button>
+      </form>
+    </footer>
+
+    <div id="scrim" class="scrim" hidden></div>
+    <aside id="drawer" class="drawer" aria-hidden="true">
+      <div class="drawer-head">
+        <img src="icon-192.png" alt="">
+        <div>
+          <div class="brand">Hybrid Workspace</div>
+          <div id="host" class="muted small-text">laptop</div>
+        </div>
+      </div>
+      <button id="drawer-new" class="btn-accent wide">+ New conversation</button>
+      <div class="section">Recent</div>
+      <div id="chat-list" class="chat-list"></div>
+      <div class="section">Remembered</div>
+      <div id="mem-list" class="chat-list mem"></div>
+      <button id="unpair" class="link-btn">Disconnect this phone</button>
+    </aside>
+
+    <div id="sheet" class="sheet" hidden>
+      <div class="sheet-card">
+        <div class="sheet-title">Model</div>
+        <div id="model-list"></div>
+        <p class="muted small-text">Local models run on your laptop. Cloud models send your message to Google or Groq.</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -28,6 +28,16 @@ past sessions as short summaries — with your data kept on your laptop.
 - **Consistent context.** Every model receives the same fitted history; in long
   chats, older messages are replaced by a rolling summary instead of being
   silently cut.
+- **Code explainer.** Map a project (files, classes, functions, who calls
+  what), explain what changed since your last review (great for code an AI
+  wrote), explain a file or function at three depths, trace a feature, quiz
+  yourself, or explain a traceback against your own code.
+- **Quick Ask.** Press Ctrl+Shift+Space in any app: a popup that already has
+  the window and your selected text. Explain, summarise, translate, rewrite
+  or fix grammar, then copy the answer or paste it in place of the selection.
+- **Phone app.** An installable Android app (PWA) that uses the laptop's
+  models, chats and memory, runs laptop commands (`/find`, `/screenshot`,
+  `/web`) and takes files from Android's Share menu.
 - **Measured.** Unit tests, plus evaluation scripts for the prompt router
   (`eval_router.py`) and memory retrieval (`eval_memory.py`).
 
@@ -81,6 +91,26 @@ GROQ_API_KEY=...
 Start the app with `launch.bat` (no console window) or
 `venv\Scripts\python app.py`.
 
+Optional, for reading screen text in Quick Ask (Windows OCR):
+
+```powershell
+venv\Scripts\python -m pip install winrt-runtime winrt-Windows.Media.Ocr winrt-Windows.Graphics.Imaging winrt-Windows.Storage.Streams winrt-Windows.Globalization winrt-Windows.Foundation winrt-Windows.Foundation.Collections
+```
+
+### Phone
+
+1. Desktop app → Settings → Phone → turn on **Let my phone connect**
+   (allow it through the Windows firewall when asked).
+2. Press **Pair a phone (QR)** and scan the code with your phone. On the same
+   Wi-Fi this works straight away.
+3. To use it anywhere and install it as an app, install
+   [Tailscale](https://tailscale.com) on the laptop and the phone (same
+   account), then on the laptop run `tailscale serve --bg 8765` and paste the
+   `https://….ts.net` address it prints into Settings → Phone. Pair again from
+   that address, then in Chrome: ⋮ → **Install app**. Hybrid AI now appears in
+   Android's Share menu.
+4. Keep the laptop awake while plugged in (Windows power settings).
+
 ## Project layout
 
 | File | What it does |
@@ -94,6 +124,9 @@ Start the app with `launch.bat` (no console window) or
 | `editor.py` | Edit proposals, safety checks, diffs, apply with backup, undo |
 | `access.py` | Allowed folders and always-blocked locations |
 | `storage.py`, `settings.py`, `config.py` | Chats in SQLite, settings, private data folder |
+| `codeexplain.py`, `ui/code_view.py` | Project map, changes since last review, explain/trace/quiz prompts |
+| `quickask.py`, `ui/quickask_view.py` | Global hotkey, window capture, selection, OCR, popup |
+| `phone.py`, `tools.py`, `mobile/` | Phone server (inside the app), laptop commands, the phone app |
 | `classifier.py`, `routing_data.py`, `eval_router.py` | Embedding prompt router (kept for study; the app uses manual choice) |
 | `eval_memory.py`, `memory_check.py` | Memory retrieval eval; privacy-safe health check |
 | `tests/` | `venv\Scripts\python -m pytest tests -q` |
@@ -111,8 +144,8 @@ Start the app with `launch.bat` (no console window) or
 - [x] Attachments and images
 - [x] File editing with diff approval
 - [x] Memory from session summaries
-- [ ] Code explainer for AI-written code
-- [ ] Quick Ask popup with screen and selected-text context
-- [ ] Android companion app
+- [x] Code explainer for AI-written code
+- [x] Quick Ask popup with screen and selected-text context
+- [x] Android companion app
 - [ ] Reminders and daily brief
 - [ ] Internship kit

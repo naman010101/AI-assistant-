@@ -116,6 +116,7 @@ class HybridAIApp(ctk.CTk):
         self.complete_text = memory.ollama_completer(router.MODELS["local-general"][0], json_mode=False)
         self.digesting = set()       # chats whose older messages are being summarised
         self.hotkey = None           # Quick Ask's global hotkey
+        self.phone = None            # phone server (Settings → Phone)
         self.quick_popup = None
         self._qa_busy = False
         self.summarising = set()     # chats waiting for / being summarised
@@ -142,6 +143,7 @@ class HybridAIApp(ctk.CTk):
         self._refresh_sidebar()
         self.after(600, self._memory_startup)
         self.after(800, self._start_hotkey)
+        self.after(900, self._start_phone)
 
         self.bind_all("<Control-n>", lambda e: self.new_chat())
         self.bind_all("<Escape>", lambda e: self.stop())
@@ -184,7 +186,9 @@ class HybridAIApp(ctk.CTk):
         self.inspector = Inspector(self, on_model=self._set_model,
                                    on_setting=self._set_setting, on_clear=self.clear_chat,
                                    env_info=env_info, settings=self.settings, gate=self.gate,
-                                   data_dir=config.DATA_DIR, on_open_memory=lambda: self.open_memory())
+                                   data_dir=config.DATA_DIR, on_open_memory=lambda: self.open_memory(),
+                                   on_pair=lambda: self.open_pairing(),
+                                   on_reset_phone=lambda: self.reset_phone_token())
         self.inspector.grid(row=0, column=2, sticky="ns")
         self.panel_border = ctk.CTkFrame(self, width=1, corner_radius=0, fg_color=C["border"])
         self.panel_border.grid(row=0, column=2, sticky="nsw")
@@ -282,6 +286,8 @@ class HybridAIApp(ctk.CTk):
         # The open chat stays saved; it is summarised the next time the app starts.
         if self.hotkey:
             self.hotkey.stop()
+        if self.phone:
+            self.phone.stop()
         if self.gen:
             self.gen["stop"].set()
         if self.store:
@@ -351,6 +357,8 @@ class HybridAIApp(ctk.CTk):
         self.settings.set(key, value)
         if key == "quickask":
             self._start_hotkey()
+        if key == "phone":
+            self._start_phone()
         if key == "show_meta" and not self.gen:
             self._render_active()
 
@@ -487,6 +495,9 @@ class HybridAIApp(ctk.CTk):
     def send(self, text):
         if self.gen:
             return
+        if self.phone and self.phone.busy.locked():
+            self.composer.show_notice("Your phone is getting a reply right now; send again in a moment.", "info")
+            return
         # Full file paths typed or pasted into the message are attached too.
         for p in attachments.find_paths(text):
             self.attach_path(p, source="path")
@@ -603,6 +614,8 @@ class HybridAIApp(ctk.CTk):
                     statuses.append(("__summarised__",) + tuple(ev[1:]))
                 elif ev[0] == "summary_failed":
                     statuses.append(("__summary_failed__",) + tuple(ev[1:]))
+                elif ev[0] in ("phone_changed", "phone_deleted"):
+                    statuses.append(("__" + ev[0] + "__", ev[1]))
                 elif ev[0] == "quickask":
                     statuses.append(("__quickask__",))
                 elif ev[0] == "digested":
@@ -626,6 +639,10 @@ class HybridAIApp(ctk.CTk):
                     self.inspector.add_log(st[1], st[2])
                 elif st[0] == "__summarised__":
                     self._on_summarised(*st[1:])
+                elif st[0] == "__phone_changed__":
+                    self._reload_conv(st[1])
+                elif st[0] == "__phone_deleted__":
+                    self._phone_deleted(st[1])
                 elif st[0] == "__quickask__":
                     self._quick_ask()
                 elif st[0] == "__digested__":
@@ -744,6 +761,14 @@ class HybridAIApp(ctk.CTk):
     def _memory_context(self, query, mem_cfg, system, gen_id):
         """Build the memory part of the system message (runs in the worker
         thread). Facts are always included, even if the search fails."""
+        block, used = self._memory_block(query, mem_cfg)
+        if used:
+            self.events.put((gen_id, "memory", used))
+        return "\n\n".join(x for x in (block, system) if x) or None
+
+    def _memory_block(self, query, mem_cfg):
+        """(memory notes text or None, [{id, title}] of summaries used).
+        Thread-safe: used by desktop replies and by the phone server."""
         q = self.events
         k = int(mem_cfg.get("k", 3))
         threshold = float(mem_cfg.get("threshold", 0.5))
@@ -774,9 +799,7 @@ class HybridAIApp(ctk.CTk):
                       + (" · recall question: added recent sessions" if recall else "")
                       + f" · {indexed}/{len(n_sum)} summaries searchable" + note,
                "warn" if note or (n_sum and not indexed) else None))
-        if hits:
-            q.put((gen_id, "memory", [{"id": sm["id"], "title": sm["title"]} for _, sm in hits]))
-        return "\n\n".join(x for x in (block, system) if x) or None
+        return block, [{"id": sm["id"], "title": sm["title"]} for _, sm in hits]
 
     def _kept(self, conv_id):
         return conv_id in set(self.settings.get("memory_keep_ids", []))
@@ -918,6 +941,105 @@ class HybridAIApp(ctk.CTk):
         self.conversations.pop(conv_id, None)
         if conv_id in self.order:
             self.order.remove(conv_id)
+
+    # ================= phone =================
+    def memory_system(self, query, model):
+        """Memory notes for a message from the phone: (system text, used list)."""
+        mem_cfg = self.settings.get("memory", {})
+        if not (self.mem and mem_cfg.get("enabled", True) and (where(model) == "Local" or mem_cfg.get("cloud"))):
+            return None, []
+        block, used = self._memory_block(query, mem_cfg)
+        return block, used
+
+    def desktop_busy(self):
+        return self.gen is not None
+
+    def notify(self, event):
+        self.events.put(event)
+
+    def _start_phone(self):
+        if self.phone:
+            self.phone.stop()
+            self.phone = None
+        cfg = self.settings.get("phone", {})
+        if not cfg.get("enabled"):
+            self.sidebar.set_status("Phone", "unknown", "off")
+            return
+        import phone
+        srv = phone.PhoneServer(self, port=int(cfg.get("port", 8765)), lan=cfg.get("lan", True))
+        if srv.start():
+            self.phone = srv
+            self.sidebar.set_status("Phone", "ok", f"port {srv.port}")
+            self.inspector.add_log(f"phone: listening on port {srv.port}"
+                                   + (" (Wi-Fi + Tailscale)" if srv.lan else " (this laptop / tailscale serve only)"))
+        else:
+            self.sidebar.set_status("Phone", "err", "not started")
+            self.inspector.add_log(f"phone: couldn't start: {srv.error}", "warn")
+
+    def open_pairing(self):
+        cfg = self.settings.get("phone", {})
+        if not self.phone:
+            dialogs.info(self, "Phone access is off", "Turn on “Let my phone connect” first.")
+            return
+        import webbrowser
+        webbrowser.open(f"http://localhost:{int(cfg.get('port', 8765))}/pair")
+
+    def reset_phone_token(self):
+        if self.phone:
+            self.phone.reset_token()
+        else:
+            import phone
+            phone.load_token(new=True)
+        self.inspector.add_log("phone: all paired phones disconnected (pair again with the new QR code)", "warn")
+
+    def _reload_conv(self, conv_id):
+        """A chat changed on the phone: take the saved version."""
+        if not self.store or (self.gen and self.gen["conv"].id == conv_id):
+            return
+        data = self.store.get(conv_id)
+        if data is None:
+            return self._phone_deleted(conv_id)
+        conv = self.conversations.get(conv_id)
+        if conv is None:
+            conv = Conversation(data["id"], data["title"], data["history"], data["turns"], data["created"],
+                                data.get("meta"))
+            self.conversations[conv_id] = conv
+        else:
+            conv.title, conv.history, conv.turns = data["title"], data["history"], data["turns"]
+            conv.created, conv.meta = data["created"], data.get("meta") or {}
+        if conv_id in self.order:
+            self.order.remove(conv_id)
+        self.order.insert(0, conv_id)
+        if self.active is conv and not self.gen:
+            self._render_active()
+        self._refresh_sidebar()
+
+    def _phone_deleted(self, conv_id):
+        if conv_id not in self.conversations:
+            return
+        was_active = self.active is not None and self.active.id == conv_id
+        self._drop_conv(conv_id)
+        if was_active:
+            self.active = None
+            self.new_chat()
+        else:
+            self._refresh_sidebar()
+
+    def _end_idle_others(self):
+        """Chats you aren't in (e.g. from the phone) that have gone quiet are
+        finished sessions: summarise them like any other."""
+        idle = float(self.settings.get("memory", {}).get("idle_minutes", 30))
+        if idle <= 0 or self.gen:
+            return
+        busy = self.phone.busy_conv if self.phone else None
+        now = time.time()
+        for cid in list(self.order):
+            conv = self.conversations.get(cid)
+            if not conv or conv is self.active or not conv.turns or cid == busy or cid in self.summarising:
+                continue
+            last = max((t.get("at") or 0) for t in conv.turns)
+            if last and now - last > idle * 60 and not self.summary_failures.get(cid):
+                self._end_session(conv)
 
     # ================= Quick Ask =================
     def _start_hotkey(self):
@@ -1306,6 +1428,7 @@ class HybridAIApp(ctk.CTk):
         q, host = self.events, self.ollama_host
         self._check_idle()
         self._retry_summaries()
+        self._end_idle_others()
         mem, embed = self.mem, self.embed
 
         def work():
@@ -1323,8 +1446,7 @@ class HybridAIApp(ctk.CTk):
             for name, var in (("Gemini", "GEMINI_API_KEY"), ("Groq", "GROQ_API_KEY")):
                 ok = bool(os.getenv(var))
                 q.put(("status", name, "ok" if ok else "err", "key set" if ok else "no key"))
-            # Manual mode: the router's classifier isn't used, so it isn't loaded.
-            q.put(("status", "Router", "ok", "manual"))
+            # (The router's classifier isn't used in manual mode, so it isn't checked.)
             if mem:  # summaries saved while the embedding model was unavailable
                 try:
                     n = mem.embed_missing(embed, getattr(embed, "model", None))
