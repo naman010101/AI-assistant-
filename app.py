@@ -39,6 +39,7 @@ import context  # noqa: E402
 import editor  # noqa: E402
 import memory  # noqa: E402
 import router  # noqa: E402
+import access  # noqa: E402
 from access import AccessGate  # noqa: E402
 from attachments import AttachError  # noqa: E402
 from router import stream_chat  # noqa: E402
@@ -49,6 +50,7 @@ from ui.chat_view import ChatView  # noqa: E402
 from ui.composer import Composer  # noqa: E402
 from ui.diff_view import DiffWindow  # noqa: E402
 from ui.memory_view import MemoryWindow  # noqa: E402
+from ui.code_view import CodeWindow  # noqa: E402
 from ui.inspector import Inspector  # noqa: E402
 from ui.sidebar import Sidebar  # noqa: E402
 from ui.theme import C, Fonts, model_label, where  # noqa: E402
@@ -149,7 +151,8 @@ class HybridAIApp(ctk.CTk):
         self.sidebar = Sidebar(self, on_new_chat=self.new_chat, on_select_chat=self.select_chat,
                                on_delete_chat=self.delete_chat, icon_path=os.path.join(BASE_DIR, "icon.png"),
                                on_open_memory=lambda: self.open_memory(),
-                               on_select_summary=lambda sid: self.open_memory(sid))
+                               on_select_summary=lambda sid: self.open_memory(sid),
+                               on_open_code=lambda: self.open_code())
         self.sidebar.grid(row=0, column=0, sticky="ns")
         ctk.CTkFrame(self, width=1, corner_radius=0, fg_color=C["border"]).grid(row=0, column=0, sticky="nse")
 
@@ -486,15 +489,22 @@ class HybridAIApp(ctk.CTk):
 
         content, notes = (attachments.build_message(text, atts, self.settings.get("context_tokens", 8192))
                           if atts else (None, []))
-        conv = self.active
         self.composer.clear()
         self.pending = []
         self._show_pending()
+        self._generate(self.active, text, model, content=content, meta=[a.meta() for a in atts],
+                       notes=notes, query=text or " ".join(a.name for a in atts))
+
+    def _generate(self, conv, text, model, content=None, meta=None, notes=None, query=None,
+                  build=None, use_memory=True, on_finished=None, title=None):
+        """Start a reply in `conv`. `build` (optional) runs in the worker
+        thread and returns the content to send (for slow preparation such as
+        embedding a project). `on_finished(conv, turn)` runs after the reply."""
+        meta, notes = meta or [], notes or []
         if not conv.turns:
-            first = text or atts[0].name
+            first = title or text or (meta[0]["name"] if meta else "New conversation")
             conv.title = first if len(first) <= 34 else first[:33].rstrip() + "…"
             self._refresh_sidebar()
-        meta = [a.meta() for a in atts]
         conv.turns.append({"role": "user", "text": text, "at": time.time(),
                            "attachments": meta, "notes": notes})
         self.chat.add_user(text, meta, notes)
@@ -504,14 +514,15 @@ class HybridAIApp(ctk.CTk):
         msg = self.chat.add_assistant()
         msg.set_waiting(model)
         self.inspector.set_route(model_label(model), "Selected manually" if model == self.model else
-                                 "Switched to the vision model for this message")
+                                 ("Switched to the vision model for this message" if model == VISION_KEY
+                                  else "Chosen for this message"))
         self.inspector.set_stats("…", "…", "…")
 
         gen_id = next(self.gen_ids)
         stop_event = threading.Event()
         self.gen = {"id": gen_id, "msg": msg, "conv": conv, "route": None,
                     "start": time.perf_counter(), "first": None, "chunks": 0,
-                    "text": "", "stop": stop_event}
+                    "text": "", "stop": stop_event, "on_finished": on_finished}
         self.composer.set_generating(True)
         self.sidebar.set_enabled(False)
         self._update_header()
@@ -521,9 +532,9 @@ class HybridAIApp(ctk.CTk):
         system = editor.instructions(edit_files) if edit_files else None
         self.gen["edit_files"], self.gen["user_text"] = edit_files, text
         mem_cfg = self.settings.get("memory", {})
-        use_memory = bool(self.mem) and mem_cfg.get("enabled", True) and (
+        use_memory = use_memory and bool(self.mem) and mem_cfg.get("enabled", True) and (
             where(model) == "Local" or mem_cfg.get("cloud", False))
-        query = text or " ".join(a.name for a in atts)
+        query = query or text
 
         fit_args = {"budget": int(self.settings.get("context_tokens", 8192)),
                     "digest": conv.meta.get("digest"), "digest_upto": conv.meta.get("digest_upto", 0)}
@@ -536,6 +547,14 @@ class HybridAIApp(ctk.CTk):
                               + f" · ~{info['tokens']} tokens (same for every model)"))
 
         def work():
+            nonlocal content
+            if build is not None:
+                try:
+                    content = build()
+                except Exception as e:
+                    q.put((gen_id, "tok", f"Couldn't prepare this: {type(e).__name__}: {e}"))
+                    q.put((gen_id, "done", model, "preparation failed", 0))
+                    return
             sys_text = system
             if use_memory:
                 sys_text = self._memory_context(query, mem_cfg, system, gen_id)
@@ -672,6 +691,11 @@ class HybridAIApp(ctk.CTk):
             self._show_edits(conv, len(conv.turns) - 1, g["msg"])
         self._save(conv)  # the worker has finished touching conv.history by now
         self._maybe_digest(conv)
+        if g.get("on_finished") and not stopped:
+            try:
+                g["on_finished"](conv, turn)
+            except Exception as e:
+                self.inspector.add_log(f"after-reply step failed: {e}", "warn")
         if self.order and self.order[0] != conv.id:  # most recently used goes to the top
             self.order.remove(conv.id)
             self.order.insert(0, conv.id)
@@ -880,6 +904,38 @@ class HybridAIApp(ctk.CTk):
         self.conversations.pop(conv_id, None)
         if conv_id in self.order:
             self.order.remove(conv_id)
+
+    # ================= code explainer =================
+    def open_code(self):
+        CodeWindow(self, self.settings, self.gate, on_start=self.start_code_chat,
+                   blocked=lambda p: self.gate.blocked_reason(access._norm(p)))
+
+    def start_code_chat(self, title, display, build, project, journal=None):
+        """A new chat about a project. `build` prepares the prompt in the
+        worker thread (it may embed the project's functions first)."""
+        if self.gen:
+            self.composer.show_notice("Wait for the current reply to finish first.", "info")
+            return
+        conv = Conversation(title=title)
+        self.conversations[conv.id] = conv
+        self.order.insert(0, conv.id)
+        self.select_chat(conv.id)
+        model = "local-coder" if where(self.model) == "Local" else self.model
+        meta = [{"name": project.name, "kind": "code", "detail": "project", "path": project.root,
+                 "editable": False}]
+        on_finished = None
+        if journal:
+            def on_finished(c, turn, project=project, journal=journal):
+                project.mark_reviewed(changes=journal, explanation=turn["text"],
+                                      blocked=lambda p: self.gate.blocked_reason(access._norm(p)))
+                c.turns.append({"role": "note", "at": time.time(),
+                                "text": "Saved to the change journal and marked as reviewed: next time only "
+                                        "newer changes are explained."})
+                if self.active is c:
+                    self.chat.add_note(c.turns[-1]["text"])
+                self._save(c)
+        self._generate(conv, display, model, meta=meta, build=build, use_memory=False,
+                       title=title, on_finished=on_finished)
 
     def open_facts(self):
         self.open_memory("facts")

@@ -43,6 +43,8 @@ DEFAULTS = {
     },
     "memory_setup_done": False,    # the one-time question about chats saved before memory existed
     "memory_keep_ids": [],         # chats you chose to keep in full
+    "code_projects": [],           # folders added in the Code window
+    "code_last": None,
     "access": {
         "folders": None,           # None = the defaults from _default_folders()
         "read_files": True,
