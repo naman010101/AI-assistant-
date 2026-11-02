@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     title    TEXT NOT NULL,
     history  TEXT NOT NULL DEFAULT '[]',
     created  REAL NOT NULL,
-    updated  REAL NOT NULL
+    updated  REAL NOT NULL,
+    meta     TEXT              -- JSON: digest of older messages etc.
 );
 CREATE TABLE IF NOT EXISTS turns (
     conv_id  TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -88,13 +89,16 @@ class Store:
         cols = {r[1] for r in self._db.execute("PRAGMA table_info(turns)")}
         if "extra" not in cols:  # databases made by the first version
             self._db.execute("ALTER TABLE turns ADD COLUMN extra TEXT")
+        ccols = {r[1] for r in self._db.execute("PRAGMA table_info(conversations)")}
+        if "meta" not in ccols:
+            self._db.execute("ALTER TABLE conversations ADD COLUMN meta TEXT")
         self._db.commit()
 
     def load_all(self):
         """Every saved conversation, most recently used first."""
         with self._lock:
             convs = self._db.execute(
-                "SELECT id, title, history, created, updated FROM conversations "
+                "SELECT id, title, history, created, updated, meta FROM conversations "
                 "ORDER BY updated DESC").fetchall()
             out = []
             for c in convs:
@@ -104,6 +108,7 @@ class Store:
                 out.append({
                     "id": c["id"], "title": c["title"], "created": c["created"],
                     "updated": c["updated"], "history": json.loads(c["history"]),
+                    "meta": json.loads(c["meta"]) if c["meta"] else {},
                     "turns": [_turn_from_row(t) for t in turns],
                 })
             return out
@@ -131,17 +136,18 @@ class Store:
             r = self._db.execute("SELECT MAX(updated), COUNT(*) FROM conversations").fetchone()
             return (r[0] or 0.0, r[1])
 
-    def save(self, conv_id, title, history, turns, created=None):
+    def save(self, conv_id, title, history, turns, created=None, meta=None):
         """Write one conversation (insert or replace). Conversations are small,
         so rewriting all its turns is simpler than tracking what changed."""
         now = time.time()
         with self._lock, self._db:  # `with self._db` = one transaction
             self._db.execute(
-                "INSERT INTO conversations (id, title, history, created, updated) "
-                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
-                "title = excluded.title, history = excluded.history, updated = excluded.updated",
+                "INSERT INTO conversations (id, title, history, created, updated, meta) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+                "title = excluded.title, history = excluded.history, updated = excluded.updated, "
+                "meta = excluded.meta",
                 (conv_id, title, json.dumps(_strip_images(history), ensure_ascii=False),
-                 created or now, now))
+                 created or now, now, json.dumps(meta, ensure_ascii=False) if meta else None))
             self._db.execute("DELETE FROM turns WHERE conv_id = ?", (conv_id,))
             self._db.executemany(
                 "INSERT INTO turns (conv_id, seq, role, text, route, meta, stopped, at, extra) "

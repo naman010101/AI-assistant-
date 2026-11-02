@@ -62,7 +62,10 @@ class MemoryWindow(ctk.CTkToplevel):
 
         self.view.set("Sessions")
         self._fill_list()
-        if select:
+        if select == "facts":
+            self.view.set("Facts")
+            self._switch("Facts")
+        elif select:
             self.show_summary(select)
         else:
             first = self.mem.summaries(limit=1)
@@ -215,11 +218,37 @@ class MemoryWindow(ctk.CTkToplevel):
         lst = ctk.CTkScrollableFrame(r, fg_color="transparent", scrollbar_button_color=C["border2"])
         lst.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         lst.grid_columnconfigure(0, weight=1)
-        facts = self.mem.facts()
+        pending = self.mem.pending_facts()
+        facts = self.mem.facts("active")
+        r0 = 0
+        if pending:
+            ctk.CTkLabel(lst, text=f"WAITING FOR YOUR OK ({len(pending)})  ·  picked up from your sessions; "
+                                   f"only confirmed facts are used", font=Fonts.ui(11, "bold"),
+                         text_color=C["warn"], anchor="w").grid(row=r0, column=0, sticky="w", padx=6, pady=(4, 2))
+            r0 += 1
+            for f in pending:
+                row = ctk.CTkFrame(lst, fg_color=C["accent_bg"], corner_radius=8, border_width=1,
+                                   border_color=C["accent_border"])
+                row.grid(row=r0, column=0, sticky="ew", pady=3, padx=4)
+                r0 += 1
+                row.grid_columnconfigure(1, weight=1)
+                ctk.CTkLabel(row, text="you" if f["kind"] == "user" else "project", width=56, font=Fonts.ui(11),
+                             text_color=C["accent_hi"]).grid(row=0, column=0, padx=(10, 4), pady=6)
+                entry = ctk.CTkEntry(row, height=30, corner_radius=6, font=Fonts.ui(13), fg_color="transparent",
+                                     border_width=0, text_color=C["text"])
+                entry.insert(0, f["text"])
+                entry.grid(row=0, column=1, sticky="ew")
+                self._btn(row, "✓ Correct", lambda fid=f["id"], en=entry: self._confirm(fid, en), main=True
+                          ).grid(row=0, column=2, padx=4, pady=4)
+                self._btn(row, "✕ Wrong", lambda fid=f["id"]: self._del_fact(fid), danger=True
+                          ).grid(row=0, column=3, padx=(0, 8), pady=4)
+            ctk.CTkLabel(lst, text="CONFIRMED", font=Fonts.ui(11, "bold"), text_color=C["muted"], anchor="w"
+                         ).grid(row=r0, column=0, sticky="w", padx=6, pady=(12, 2))
+            r0 += 1
         if not facts:
-            ctk.CTkLabel(lst, text="No facts yet. They're collected from your sessions, or add your own above.",
-                         font=Fonts.ui(12), text_color=C["faint"]).grid(row=0, column=0, sticky="w", padx=6, pady=6)
-        for i, f in enumerate(facts):
+            ctk.CTkLabel(lst, text="No confirmed facts yet. Confirm the ones above, or add your own.",
+                         font=Fonts.ui(12), text_color=C["faint"]).grid(row=r0, column=0, sticky="w", padx=6, pady=6)
+        for i, f in enumerate(facts, start=r0):
             row = ctk.CTkFrame(lst, fg_color=C["bg"], corner_radius=8, border_width=1,
                                border_color=C["accent_border"] if f["pinned"] else C["border"])
             row.grid(row=i, column=0, sticky="ew", pady=3, padx=4)
@@ -241,6 +270,14 @@ class MemoryWindow(ctk.CTkToplevel):
             ctk.CTkButton(row, text="✕", width=28, height=26, corner_radius=6, font=Fonts.ui(11),
                           fg_color="transparent", hover_color=C["stop_bg"], text_color=C["muted"],
                           command=lambda fid=f["id"]: self._del_fact(fid)).grid(row=0, column=3, padx=(0, 8))
+
+    def _confirm(self, fid, entry):
+        text = entry.get().strip()
+        if text:
+            self.mem.update_fact(fid, text)  # you may have corrected the wording
+            self.mem.confirm_fact(fid)
+        self.on_changed()
+        self._show_facts()
 
     def _add_fact(self):
         text = self.new_fact.get().strip()

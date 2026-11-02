@@ -35,6 +35,7 @@ except Exception as _e:  # never stop the app over this; report it in the log
     MIGRATION_NOTES = [f"could not move old data: {_e}"]
 
 import attachments  # noqa: E402
+import context  # noqa: E402
 import editor  # noqa: E402
 import memory  # noqa: E402
 import router  # noqa: E402
@@ -72,12 +73,13 @@ FILE_TYPES = [
 
 class Conversation:
     def __init__(self, conv_id=None, title="New conversation", history=None, turns=None,
-                 created=None):
+                 created=None, meta=None):
         self.id = conv_id or uuid.uuid4().hex
         self.title = title
         self.history = history or []  # the list router.stream_chat reads and appends to
         self.turns = turns or []      # what the UI shows: dicts with role, text, route, meta, stopped
         self.created = created        # set by the store; None until first saved
+        self.meta = meta or {}        # digest of older messages: {"digest": str, "digest_upto": int}
 
 
 class HybridAIApp(ctk.CTk):
@@ -107,6 +109,8 @@ class HybridAIApp(ctk.CTk):
         self.mem = None
         self.embed = memory.ollama_embedder()
         self.complete = memory.ollama_completer(router.MODELS["local-general"][0])
+        self.complete_text = memory.ollama_completer(router.MODELS["local-general"][0], json_mode=False)
+        self.digesting = set()       # chats whose older messages are being summarised
         self.summarising = set()     # chats waiting for / being summarised
         self.summary_failures = {}   # conv id -> failed attempts this run
         self._summary_lock = threading.Lock()  # one summary at a time
@@ -215,6 +219,7 @@ class HybridAIApp(ctk.CTk):
         self.active.history.clear()
         self.active.turns.clear()
         self.active.title = "New conversation"
+        self.active.meta = {}
         self._forget(self.active.id)  # an empty chat isn't kept on disk
         self._render_active()
         self._refresh_sidebar()
@@ -241,7 +246,7 @@ class HybridAIApp(ctk.CTk):
             self.inspector.add_log(f"could not open chat history: {e}", "warn")
             return
         for c in saved:
-            conv = Conversation(c["id"], c["title"], c["history"], c["turns"], c["created"])
+            conv = Conversation(c["id"], c["title"], c["history"], c["turns"], c["created"], c.get("meta"))
             self.conversations[conv.id] = conv
             self.order.append(conv.id)
         if saved:
@@ -252,7 +257,7 @@ class HybridAIApp(ctk.CTk):
         if not self.store:
             return
         try:
-            self.store.save(conv.id, conv.title, conv.history, conv.turns, conv.created)
+            self.store.save(conv.id, conv.title, conv.history, conv.turns, conv.created, conv.meta)
             conv.created = conv.created or time.time()
         except Exception as e:
             self.inspector.add_log(f"save failed: {e}", "warn")
@@ -520,6 +525,16 @@ class HybridAIApp(ctk.CTk):
             where(model) == "Local" or mem_cfg.get("cloud", False))
         query = text or " ".join(a.name for a in atts)
 
+        fit_args = {"budget": int(self.settings.get("context_tokens", 8192)),
+                    "digest": conv.meta.get("digest"), "digest_upto": conv.meta.get("digest_upto", 0)}
+
+        def on_context(info):
+            if info["dropped"] or info["digest_used"]:
+                q.put(("log", f"context: {info['sent']} recent messages"
+                              + (" + summary of earlier ones" if info["digest_used"] else "")
+                              + (f", {info['dropped']} older left out" if info["dropped"] else "")
+                              + f" · ~{info['tokens']} tokens (same for every model)"))
+
         def work():
             sys_text = system
             if use_memory:
@@ -530,7 +545,8 @@ class HybridAIApp(ctk.CTk):
                             on_done=lambda r, why, ms: q.put((gen_id, "done", r, why, ms)),
                             on_route=lambda r, why: q.put((gen_id, "route", r, why)),
                             model_override=model, should_stop=stop_event.is_set,
-                            content=content, system=sys_text)
+                            content=content, system=sys_text, fit_args=fit_args,
+                            on_context=on_context)
             except Exception as e:  # anything stream_chat didn't catch itself
                 q.put((gen_id, "tok", f"\n\nError: {e}"))
                 q.put((gen_id, "done", "local-general", "error before streaming", 0))
@@ -558,6 +574,8 @@ class HybridAIApp(ctk.CTk):
                     statuses.append(("__summarised__",) + tuple(ev[1:]))
                 elif ev[0] == "summary_failed":
                     statuses.append(("__summary_failed__",) + tuple(ev[1:]))
+                elif ev[0] == "digested":
+                    statuses.append(("__digested__",) + tuple(ev[1:]))
                 elif self.gen and ev[0] == self.gen["id"]:
                     if ev[1] == "tok":
                         tokens.append(ev[2])
@@ -577,6 +595,8 @@ class HybridAIApp(ctk.CTk):
                     self.inspector.add_log(st[1], st[2])
                 elif st[0] == "__summarised__":
                     self._on_summarised(*st[1:])
+                elif st[0] == "__digested__":
+                    self._on_digested(*st[1:])
                 elif st[0] == "__summary_failed__":
                     self._on_summary_failed(*st[1:])
                 else:
@@ -651,6 +671,7 @@ class HybridAIApp(ctk.CTk):
         if turn.get("edits"):
             self._show_edits(conv, len(conv.turns) - 1, g["msg"])
         self._save(conv)  # the worker has finished touching conv.history by now
+        self._maybe_digest(conv)
         if self.order and self.order[0] != conv.id:  # most recently used goes to the top
             self.order.remove(conv.id)
             self.order.insert(0, conv.id)
@@ -785,7 +806,51 @@ class HybridAIApp(ctk.CTk):
             self._forget(conv_id)  # only now, with the summary safely saved
             self._drop_conv(conv_id)
         self.inspector.add_log(f"remembered: “{title}” (full chat deleted)", "local")
+        try:
+            new = self.mem.pending_facts(source=sid)
+        except Exception:
+            new = []
+        if new:
+            self.inspector.add_log(f"{len(new)} new fact{'s' if len(new) != 1 else ''} about you to confirm "
+                                   f"(Memory → Facts); they aren't used until you do", "warn")
+            self.composer.show_notice(f"{len(new)} new thing{'s' if len(new) != 1 else ''} learned about you. "
+                                      f"Check them in Memory → Facts (not used until you confirm).", "info", 12)
         self._refresh_sidebar()
+
+    # ---------- digest of older messages in a long chat ----------
+    def _maybe_digest(self, conv):
+        budget = int(self.settings.get("context_tokens", 8192))
+        upto = conv.meta.get("digest_upto", 0)
+        if conv.id in self.digesting or not context.needs_digest(conv.history, upto, budget):
+            return
+        start, end = context.digest_range(conv.history, upto)
+        if end <= start:
+            return
+        self.digesting.add(conv.id)
+        prompt = context.digest_prompt(conv.meta.get("digest"), copy.deepcopy(conv.history[start:end]))
+        q, conv_id = self.events, conv.id
+
+        def job():
+            try:
+                text = context.clean_digest(self.complete_text(prompt))
+                q.put(("digested", conv_id, text, end, None))
+            except Exception as e:
+                q.put(("digested", conv_id, None, end, f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _on_digested(self, conv_id, text, end, error):
+        self.digesting.discard(conv_id)
+        conv = self.conversations.get(conv_id)
+        if conv is None or len(conv.history) < end:  # chat cleared or deleted meanwhile
+            return
+        if error or not text:
+            self.inspector.add_log(f"couldn't summarise older messages yet ({error}); they're still sent "
+                                   f"while they fit", "warn")
+            return
+        conv.meta = {**conv.meta, "digest": text, "digest_upto": end}
+        self._save(conv)
+        self.inspector.add_log(f"long chat: the first {end} messages are now kept as a summary for every model")
 
     def _on_summary_failed(self, conv_id, title, error):
         self.summarising.discard(conv_id)
@@ -815,6 +880,9 @@ class HybridAIApp(ctk.CTk):
         self.conversations.pop(conv_id, None)
         if conv_id in self.order:
             self.order.remove(conv_id)
+
+    def open_facts(self):
+        self.open_memory("facts")
 
     def open_memory(self, select=None):
         if not self.mem:

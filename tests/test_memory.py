@@ -150,3 +150,31 @@ def test_settings_upgrade_threshold(tmp_path, monkeypatch):
     assert s.get("memory")["threshold"] == 0.5 and s.get("settings_version") == 1
     s.set("memory", {**s.get("memory"), "threshold": 0.62})
     assert settings.Settings().get("memory")["threshold"] == 0.62  # user's own value kept
+
+
+def test_facts_need_confirmation(tmp_path):
+    mem = M.MemoryStore(str(tmp_path / "m.db"))
+    sid = mem.add_summary("c1", summary("Intro", ["hello"], facts=["User's name is Naman", "User lives on Mars"]),
+                          fake_embed, embed_model="fake")
+    assert mem.user_facts() == []  # nothing used before you confirm
+    pend = {f["text"]: f["id"] for f in mem.pending_facts(source=sid)}
+    assert set(pend) == {"User's name is Naman", "User lives on Mars"}
+    mem.confirm_fact(pend["User's name is Naman"])
+    mem.delete_fact(pend["User lives on Mars"])
+    assert mem.user_facts() == ["User's name is Naman"] and mem.pending_facts() == []
+    # adding by hand a fact that's pending confirms it
+    sid2 = mem.add_summary("c2", summary("More", ["x"], facts=["Studies data science"]), fake_embed)
+    mem.add_fact("studies data science", pinned=True)
+    assert "Studies data science" in mem.user_facts() and mem.pending_facts() == []
+
+
+def test_old_facts_table_upgraded(tmp_path):
+    import sqlite3
+    p = tmp_path / "old.db"
+    con = sqlite3.connect(p)
+    con.executescript("""CREATE TABLE facts (id TEXT PRIMARY KEY, text TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'user',
+        pinned INTEGER NOT NULL DEFAULT 0, source TEXT, created REAL NOT NULL);
+        INSERT INTO facts VALUES ('f1', 'User is on Windows', 'user', 0, NULL, 1);""")
+    con.commit(); con.close()
+    mem = M.MemoryStore(str(p))
+    assert mem.user_facts() == ["User is on Windows"]  # existing facts stay in use

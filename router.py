@@ -215,12 +215,28 @@ def _with_system(system, messages):
     return ([{"role": "system", "content": system}] + messages) if system else messages
 
 
+def prepare(route_name, messages, system=None, fit_args=None, on_context=None):
+    """What the model actually receives. With fit_args (budget, digest,
+    digest_upto) the history is fitted the same way for every model, so
+    switching models never changes what the conversation contains."""
+    msgs = for_model(route_name, messages)
+    if not fit_args:
+        return _with_system(system, msgs)
+    import context
+    out, info = context.fit(msgs, system, fit_args.get("digest"), fit_args.get("digest_upto", 0),
+                            fit_args.get("budget", 8192))
+    if on_context:
+        on_context(info)
+    return out
+
+
 def for_model(route_name, messages):
     return messages if route_name.split(" ")[0] in VISION_MODELS else text_only(messages)
 
 
 def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
-                model_override=None, should_stop=None, on_route=None, content=None, system=None):
+                model_override=None, should_stop=None, on_route=None, content=None, system=None,
+                fit_args=None, on_context=None):
     """`content` (optional) is what the model receives for this turn: the
     prompt plus attached file text, or a list of parts with images. Without
     it, the plain prompt is sent. `system` (optional) is an instruction sent
@@ -238,7 +254,7 @@ def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
     answer = ""          # what is saved to history (no notices or errors)
 
     try:
-        answer, _ = _stream(client, model_id, _with_system(system, for_model(route_name, messages)),
+        answer, _ = _stream(client, model_id, prepare(route_name, messages, system, fit_args, on_context),
                             on_token, should_stop)
         full_response = answer
 
@@ -251,7 +267,7 @@ def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
             fallback = "local-vision" if has_images(messages[-1]["content"]) else "local-general"
             try:
                 answer, _ = _stream(local_client, MODELS[fallback][0],
-                                    _with_system(system, for_model(fallback, messages)),
+                                    prepare(fallback, messages, system, fit_args),
                                     on_token, should_stop)
                 full_response += answer
                 route_name = f"{fallback} (fallback)"

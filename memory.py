@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS facts (
     kind      TEXT NOT NULL DEFAULT 'user',   -- user | project
     pinned    INTEGER NOT NULL DEFAULT 0,     -- always included
     source    TEXT,                           -- summary id it came from (NULL = added by hand)
-    created   REAL NOT NULL
+    created   REAL NOT NULL,
+    status    TEXT NOT NULL DEFAULT 'active'  -- pending (waiting for your OK) | active
 );
 """
 
@@ -77,6 +78,9 @@ class MemoryStore:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode = WAL")
         self._db.executescript(SCHEMA)
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(facts)")}
+        if "status" not in cols:  # facts saved by the first version count as confirmed
+            self._db.execute("ALTER TABLE facts ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
         self._db.commit()
 
     # ---------- summaries ----------
@@ -96,10 +100,12 @@ class MemoryStore:
                 (sid, conv_id, summary.get("title") or "Untitled session",
                  json.dumps(data, ensure_ascii=False), started, time.time(),
                  json.dumps(vec) if vec else None, embed_model if vec else None))
+            # Facts the summariser pulled out wait for your OK: a wrong "fact"
+            # would otherwise be sent with every message from now on.
             for fact in summary.get("facts", []):
-                self._add_fact_locked(fact, "user", source=sid)
+                self._add_fact_locked(fact, "user", source=sid, status="pending")
             for fact in summary.get("project_facts", []):
-                self._add_fact_locked(fact, "project", source=sid)
+                self._add_fact_locked(fact, "project", source=sid, status="pending")
         return sid
 
     def summaries(self, limit=None):
@@ -153,27 +159,40 @@ class MemoryStore:
                 **{k: d.get(k, []) for k in ("bullets", "facts", "open_items", "files", "tags")}}
 
     # ---------- facts ----------
-    def _add_fact_locked(self, text, kind="user", source=None, pinned=False):
+    def _add_fact_locked(self, text, kind="user", source=None, pinned=False, status="active"):
         text = re.sub(r"\s+", " ", str(text)).strip().rstrip(".")
         if not text or len(text) > 300:
             return None
         key = text.lower()
-        for r in self._db.execute("SELECT id, text FROM facts WHERE kind = ?", (kind,)):
+        for r in self._db.execute("SELECT id, text, status FROM facts WHERE kind = ?", (kind,)):
             if r["text"].lower() == key:
+                if status == "active" and r["status"] != "active":  # added by hand = confirmed
+                    self._db.execute("UPDATE facts SET status = 'active', pinned = ? WHERE id = ?",
+                                     (int(pinned), r["id"]))
                 return r["id"]  # already known
         fid = uuid.uuid4().hex
-        self._db.execute("INSERT INTO facts (id, text, kind, pinned, source, created) VALUES (?, ?, ?, ?, ?, ?)",
-                         (fid, text, kind, int(pinned), source, time.time()))
+        self._db.execute("INSERT INTO facts (id, text, kind, pinned, source, created, status) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (fid, text, kind, int(pinned), source, time.time(), status))
         return fid
 
     def add_fact(self, text, kind="user", pinned=True):
         with self._lock, self._db:
             return self._add_fact_locked(text, kind, None, pinned)
 
-    def facts(self):
+    def facts(self, status=None):
+        q = "SELECT * FROM facts" + (" WHERE status = ?" if status else "") + \
+            " ORDER BY pinned DESC, created DESC"
         with self._lock:
             return [dict(r) | {"pinned": bool(r["pinned"])} for r in
-                    self._db.execute("SELECT * FROM facts ORDER BY pinned DESC, created DESC").fetchall()]
+                    self._db.execute(q, (status,) if status else ()).fetchall()]
+
+    def pending_facts(self, source=None):
+        return [f for f in self.facts("pending") if source is None or f["source"] == source]
+
+    def confirm_fact(self, fid):
+        with self._lock, self._db:
+            self._db.execute("UPDATE facts SET status = 'active' WHERE id = ?", (fid,))
 
     def set_pinned(self, fid, pinned):
         with self._lock, self._db:
@@ -190,9 +209,11 @@ class MemoryStore:
     def user_facts(self):
         """Facts always sent: every pinned fact + the newest facts about the user."""
         with self._lock:
-            pinned = self._db.execute("SELECT text FROM facts WHERE pinned = 1 ORDER BY created").fetchall()
+            pinned = self._db.execute("SELECT text FROM facts WHERE pinned = 1 AND status = 'active' "
+                                      "ORDER BY created").fetchall()
             recent = self._db.execute("SELECT text FROM facts WHERE pinned = 0 AND kind = 'user' "
-                                      "ORDER BY created DESC LIMIT ?", (USER_FACTS_ALWAYS,)).fetchall()
+                                      "AND status = 'active' ORDER BY created DESC LIMIT ?",
+                                      (USER_FACTS_ALWAYS,)).fetchall()
         return [r["text"] for r in pinned] + [r["text"] for r in recent]
 
     # ---------- search ----------
@@ -359,13 +380,13 @@ def ollama_embedder(model=None):
     return embed
 
 
-def ollama_completer(model_id="llama3.1:8b"):
-    """complete(prompt) -> text, asking Ollama for JSON output."""
+def ollama_completer(model_id="llama3.1:8b", json_mode=True):
+    """complete(prompt) -> text from a local model (JSON output by default)."""
     import classifier
 
     def complete(prompt):
         data = classifier._post("/api/chat", {
-            "model": model_id, "stream": False, "format": "json",
+            "model": model_id, "stream": False, **({"format": "json"} if json_mode else {}),
             "options": {"temperature": 0.2},
             "messages": [{"role": "user", "content": prompt}],
         }, 300)
