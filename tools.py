@@ -37,7 +37,9 @@ def cmd_help(args, ctx):
             "or ask about it\n"
             "- `/screenshot` — see the laptop's screen right now\n"
             "- `/web best budget laptop` — search the web from the laptop\n"
-            "- `/status` — is everything on the laptop running?\n\n"
+            "- `/status` — is everything on the laptop running?\n"
+            "- `/brief` — today's classes, deadlines and open items · `/reminders` — what's coming up\n"
+            "- `remind me … Friday 5pm` — set a reminder in plain words\n\n"
             "Anything without a `/` goes to the AI, with your memory, like on the laptop.")
 
 
@@ -159,7 +161,26 @@ def cmd_status(args, ctx):
     return "\n".join(lines)
 
 
-COMMANDS = {"help": cmd_help, "find": cmd_find, "screenshot": cmd_screenshot, "web": cmd_web,
+def cmd_brief(args, ctx):
+    host = getattr(ctx, "host", None)
+    if not host or not getattr(host, "rem", None):
+        return "Reminders aren't available on the laptop."
+    return host.brief_text()
+
+
+def cmd_reminders(args, ctx):
+    import reminders
+    rem = getattr(getattr(ctx, "host", None), "rem", None)
+    if not rem:
+        return "Reminders aren't available on the laptop."
+    items = rem.upcoming()
+    if not items:
+        return "No reminders. Set one with `remind me … Friday 5pm`."
+    return "**Coming up**\n" + "\n".join(f"- {reminders.describe(r['due_dt'], r['repeat'])}: {r['text']}"
+                                          for r in items[:15])
+
+
+COMMANDS = {"help": cmd_help, "brief": cmd_brief, "reminders": cmd_reminders, "find": cmd_find, "screenshot": cmd_screenshot, "web": cmd_web,
             "status": cmd_status}
 
 

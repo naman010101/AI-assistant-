@@ -55,6 +55,7 @@ DEFAULTS = {
         "lan": True,               # reachable over Wi-Fi/Tailscale IP; off = only via `tailscale serve`
         "public_url": "",          # e.g. https://laptop.tail1234.ts.net from `tailscale serve`
     },
+    "brief": {"enabled": True, "time": "08:00", "last": None},
     "code_projects": [],           # folders added in the Code window
     "code_last": None,
     "access": {

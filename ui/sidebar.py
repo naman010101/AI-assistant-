@@ -9,7 +9,7 @@ from .theme import C, Fonts, section_label
 
 class Sidebar(ctk.CTkFrame):
     def __init__(self, master, on_new_chat, on_select_chat, on_delete_chat=None, icon_path=None,
-                 on_open_memory=None, on_select_summary=None, on_open_code=None):
+                 on_open_memory=None, on_select_summary=None, on_open_code=None, on_open_reminders=None):
         super().__init__(master, width=232, corner_radius=0, fg_color=C["panel"],
                          border_width=0)
         self.grid_propagate(False)
@@ -50,7 +50,7 @@ class Sidebar(ctk.CTkFrame):
         self._nav_item(nav, "Chats", active=True)
         self._nav_item(nav, "Memory", command=on_open_memory)
         self._nav_item(nav, "Code", command=on_open_code)
-        self._nav_item(nav, "Reminders", soon=True)
+        self._nav_item(nav, "Reminders", command=on_open_reminders)
 
         section_label(self, "Recent").grid(row=3, column=0, sticky="ew", padx=22, pady=(18, 4))
 

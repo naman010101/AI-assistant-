@@ -53,6 +53,7 @@ from ui.diff_view import DiffWindow  # noqa: E402
 from ui.memory_view import MemoryWindow  # noqa: E402
 from ui.code_view import CodeWindow  # noqa: E402
 from ui.quickask_view import QuickAskPopup  # noqa: E402
+from ui.reminders_view import BriefWindow, NotifyPopup, RemindersWindow  # noqa: E402
 from ui.inspector import Inspector  # noqa: E402
 from ui.sidebar import Sidebar  # noqa: E402
 from ui.theme import C, Fonts, model_label, where  # noqa: E402
@@ -117,6 +118,7 @@ class HybridAIApp(ctk.CTk):
         self.digesting = set()       # chats whose older messages are being summarised
         self.hotkey = None           # Quick Ask's global hotkey
         self.phone = None            # phone server (Settings → Phone)
+        self.rem = None              # reminders + timetable
         self.quick_popup = None
         self._qa_busy = False
         self.summarising = set()     # chats waiting for / being summarised
@@ -135,6 +137,7 @@ class HybridAIApp(ctk.CTk):
         self._build()
         self._load_saved()
         self._open_memory_store()
+        self._open_reminders_store()
         self.new_chat()
         self._show_model()
         for note in MIGRATION_NOTES:
@@ -144,6 +147,7 @@ class HybridAIApp(ctk.CTk):
         self.after(600, self._memory_startup)
         self.after(800, self._start_hotkey)
         self.after(900, self._start_phone)
+        self.after(2000, self._check_reminders)
 
         self.bind_all("<Control-n>", lambda e: self.new_chat())
         self.bind_all("<Escape>", lambda e: self.stop())
@@ -160,7 +164,8 @@ class HybridAIApp(ctk.CTk):
                                on_delete_chat=self.delete_chat, icon_path=os.path.join(BASE_DIR, "icon.png"),
                                on_open_memory=lambda: self.open_memory(),
                                on_select_summary=lambda sid: self.open_memory(sid),
-                               on_open_code=lambda: self.open_code())
+                               on_open_code=lambda: self.open_code(),
+                               on_open_reminders=lambda: self.open_reminders())
         self.sidebar.grid(row=0, column=0, sticky="ns")
         ctk.CTkFrame(self, width=1, corner_radius=0, fg_color=C["border"]).grid(row=0, column=0, sticky="nse")
 
@@ -294,6 +299,8 @@ class HybridAIApp(ctk.CTk):
             self.store.close()
         if self.mem:
             self.mem.close()
+        if self.rem:
+            self.rem.close()
         self.destroy()
 
     def _render_active(self):
@@ -498,6 +505,10 @@ class HybridAIApp(ctk.CTk):
         if self.phone and self.phone.busy.locked():
             self.composer.show_notice("Your phone is getting a reply right now; send again in a moment.", "info")
             return
+        import reminders
+        if reminders.is_reminder_request(text) and not self.pending:
+            self._remind_in_chat(text)
+            return
         # Full file paths typed or pasted into the message are attached too.
         for p in attachments.find_paths(text):
             self.attach_path(p, source="path")
@@ -614,6 +625,12 @@ class HybridAIApp(ctk.CTk):
                     statuses.append(("__summarised__",) + tuple(ev[1:]))
                 elif ev[0] == "summary_failed":
                     statuses.append(("__summary_failed__",) + tuple(ev[1:]))
+                elif ev[0] == "call":
+                    statuses.append(("__call__", ev[1]))
+                elif ev[0] == "reminder_reply":
+                    statuses.append(("__reminder_reply__",) + tuple(ev[1:]))
+                elif ev[0] == "reminders_changed":
+                    pass
                 elif ev[0] in ("phone_changed", "phone_deleted"):
                     statuses.append(("__" + ev[0] + "__", ev[1]))
                 elif ev[0] == "quickask":
@@ -639,6 +656,10 @@ class HybridAIApp(ctk.CTk):
                     self.inspector.add_log(st[1], st[2])
                 elif st[0] == "__summarised__":
                     self._on_summarised(*st[1:])
+                elif st[0] == "__call__":
+                    st[1]()
+                elif st[0] == "__reminder_reply__":
+                    self._on_reminder_reply(*st[1:])
                 elif st[0] == "__phone_changed__":
                     self._reload_conv(st[1])
                 elif st[0] == "__phone_deleted__":
@@ -1040,6 +1061,152 @@ class HybridAIApp(ctk.CTk):
             last = max((t.get("at") or 0) for t in conv.turns)
             if last and now - last > idle * 60 and not self.summary_failures.get(cid):
                 self._end_session(conv)
+
+    # ================= reminders + daily brief =================
+    def _open_reminders_store(self):
+        import reminders
+        try:
+            self.rem = reminders.ReminderStore(os.path.join(config.DATA_DIR, "reminders.db"))
+        except Exception as e:
+            self.rem = None
+            self.inspector.add_log(f"reminders unavailable: {e}", "warn")
+
+    def add_reminder_text(self, text, source="desktop"):
+        """'remind me …' -> (ok, message). Plain words are parsed directly;
+        anything unusual goes to the local model. Safe from any thread."""
+        import reminders
+        if not self.rem:
+            return False, "Reminders aren't available (see the Log tab)."
+        parsed = reminders.parse(text)
+        if parsed is None:
+            try:
+                parsed = reminders.parse_model_reply(self.complete(reminders.model_prompt(text)))
+            except Exception as e:
+                return False, f"I couldn't work out when (the local model isn't reachable: {e}). Try “… on Friday 5pm”."
+        if parsed is None:
+            return False, "I couldn't work out when. Try something like “tomorrow 9am” or “Friday 5pm”."
+        due, what, repeat = parsed
+        self.rem.add(what, due, repeat, source)
+        self.events.put(("reminders_changed",))
+        return True, f"⏰ Reminder set: **{what}** — {reminders.describe(due, repeat)}."
+
+    def _remind_in_chat(self, text):
+        """'remind me …' typed in a desktop chat: handled here, no model reply needed
+        unless the time is unusual (then the local model reads it, in the background)."""
+        conv = self.active
+        if not conv.turns:
+            conv.title = text if len(text) <= 34 else text[:33].rstrip() + "…"
+        now = time.time()
+        conv.turns.append({"role": "user", "text": text, "at": now})
+        self.chat.add_user(text)
+        q, cid = self.events, conv.id
+
+        def job():
+            ok, msg = self.add_reminder_text(text, "chat")
+            q.put(("reminder_reply", cid, ok, msg))
+
+        threading.Thread(target=job, daemon=True).start()
+        self.composer.clear()
+
+    def _on_reminder_reply(self, conv_id, ok, msg):
+        conv = self.conversations.get(conv_id)
+        if conv is None:
+            return
+        turn = {"role": "assistant", "text": msg + ("\nSee or change it in Reminders." if ok else ""),
+                "route": "laptop", "meta": "Reminders", "at": time.time()}
+        conv.turns.append(turn)
+        if self.active is conv:
+            m = self.chat.add_assistant()
+            m.append(turn["text"])
+            m.set_done("laptop", "Reminders")
+        self._save(conv)
+        self._refresh_sidebar()
+
+    def _check_reminders(self):
+        """Every 30 s: show due reminders and, once a day, the brief."""
+        try:
+            if self.rem:
+                import reminders
+                for r in self.rem.due():
+                    self.rem.fired(r)
+                    when = reminders.describe(r["due_dt"], r["repeat"])
+                    NotifyPopup(self, "Reminder", f"{r['text']}\n{when}",
+                                buttons=[("Done", lambda rid=r["id"]: self.rem.complete(rid)),
+                                         ("Snooze 10 min", lambda rid=r["id"]: self.rem.snooze(rid, 10))])
+                    self.inspector.add_log(f"reminder: {r['text']}")
+                self._maybe_brief()
+        except Exception as e:
+            self.inspector.add_log(f"reminder check failed: {e}", "warn")
+        self.after(30_000, self._check_reminders)
+
+    def _maybe_brief(self):
+        cfg = self.settings.get("brief", {})
+        if not cfg.get("enabled", True):
+            return
+        now = time.localtime()
+        today = time.strftime("%Y-%m-%d", now)
+        if cfg.get("last") == today or time.strftime("%H:%M", now) < cfg.get("time", "08:00"):
+            return
+        self.settings.set("brief", {**cfg, "last": today})
+        self.show_brief()
+
+    def brief_text(self):
+        import reminders
+        changes = []
+        try:
+            import codeexplain
+            for root in self.settings.get("code_projects", [])[:6]:
+                if os.path.isdir(root):
+                    p = codeexplain.Project(root)
+                    ch = p.changes(lambda path: self.gate.blocked_reason(access._norm(path)))
+                    if ch:
+                        changes.append((p.name, len(ch)))
+        except Exception:
+            pass
+        return reminders.brief(self.rem, mem=self.mem, project_changes=changes)
+
+    def show_brief(self):
+        if self.rem:
+            BriefWindow(self, self.brief_text())
+
+    def open_reminders(self):
+        if not self.rem:
+            dialogs.info(self, "Reminders unavailable", "See the Log tab.")
+            return
+        RemindersWindow(self, self.rem, self.settings, on_add_text=self.add_reminder_text,
+                        on_read_timetable=self._read_timetable, on_show_brief=self.show_brief,
+                        on_changed=lambda: None)
+
+    def _read_timetable(self, path, done):
+        """Ask the vision model for the classes in a timetable photo (background)."""
+        import base64
+        import io
+        import reminders
+        from PIL import Image
+        q = self.events
+
+        def job():
+            try:
+                with Image.open(path) as im:
+                    im = im.convert("RGB")
+                    im.thumbnail((1600, 1600))
+                    buf = io.BytesIO()
+                    im.save(buf, "JPEG", quality=90)
+                import classifier
+                data = classifier._post("/api/chat", {
+                    "model": router.MODELS[VISION_KEY][0], "stream": False, "format": "json",
+                    "options": {"temperature": 0},
+                    "messages": [{"role": "user", "content": reminders.TIMETABLE_PROMPT,
+                                  "images": [base64.b64encode(buf.getvalue()).decode()]}]}, 300)
+                rows = reminders.parse_timetable(data["message"]["content"])
+                q.put(("call", lambda: done(rows, None)))
+            except Exception as e:
+                msg = f"Couldn't read it: {e}"
+                if "not found" in str(e).lower():
+                    msg = f"The vision model isn't installed: run  ollama pull {router.MODELS[VISION_KEY][0]}"
+                q.put(("call", lambda: done([], msg)))
+
+        threading.Thread(target=job, daemon=True).start()
 
     # ================= Quick Ask =================
     def _start_hotkey(self):

@@ -65,6 +65,7 @@ async function ping() {
     $("host").textContent = d.host;
     S.models = d.models;
     S.cloudFiles = d.cloud_files;
+    checkReminders();
     if (!S.model) S.model = store.get("hai_model") || d.model;
     if (!S.models.some((m) => m.key === S.model)) S.model = d.model;
     showModel();
@@ -475,6 +476,31 @@ async function takeShared() {
     toast("Shared to your laptop — edit the request and send");
   } catch (e) { toast("Couldn't read what was shared"); }
 }
+
+// ---------------------------------------------------------------- reminders -> notifications
+async function checkReminders() {
+  try {
+    const d = await (await api("/api/reminders")).json();
+    let seen = [];
+    try { seen = JSON.parse(store.get("hai_seen") || "[]"); } catch (e) { seen = []; }
+    for (const f of d.fired) {
+      if (seen.includes(f.id)) continue;
+      seen.push(f.id);
+      toast("⏰ " + f.text);
+      if ("Notification" in window && Notification.permission === "granted" && navigator.serviceWorker) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg) reg.showNotification("Reminder", { body: f.text, icon: "icon-192.png", tag: f.id });
+      }
+    }
+    store.set("hai_seen", JSON.stringify(seen.slice(-50)));
+  } catch (e) { /* laptop offline */ }
+}
+
+$("notify-btn").addEventListener("click", async () => {
+  if (!("Notification" in window)) { toast("Notifications need the installed app (HTTPS via Tailscale)."); return; }
+  const p = await Notification.requestPermission();
+  toast(p === "granted" ? "Reminders will show as notifications while the app is open" : "Notifications are off");
+});
 
 // ---------------------------------------------------------------- misc
 let toastTimer = null;

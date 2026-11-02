@@ -38,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import attachments
 import config
+import reminders
 import router
 import tools
 from storage import Store
@@ -167,6 +168,7 @@ class PhoneServer:
 
 class _Ctx:
     def __init__(self, srv):
+        self.host = srv.host
         self.link, self.ask_link = srv.file_link, srv.ask_link
         self.gate, self.settings, self.shots_dir = srv.host.gate, srv.host.settings, SHOTS_DIR
 
@@ -237,6 +239,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not conv:
                     return self._send(404, {"error": "no such chat (it may have been summarised into memory)"})
                 return self._send(200, {k: conv[k] for k in ("id", "title", "turns")})
+            if path == "/api/reminders":
+                rem = getattr(self.srv.host, "rem", None)
+                if not rem:
+                    return self._send(200, {"upcoming": [], "fired": []})
+                now = time.time()
+                items = rem.upcoming()
+                return self._send(200, {
+                    "upcoming": [{"id": r["id"], "text": r["text"], "due": r["due"],
+                                  "when": reminders.describe(r["due_dt"], r["repeat"])} for r in items[:30]],
+                    "fired": [{"id": f"{r['id']}:{int(r['fired'])}", "text": r["text"]} for r in items
+                              if r.get("fired") and now - r["fired"] < 20 * 60]})
             if path == "/api/memory":
                 mem = getattr(self.srv.host, "mem", None)
                 if not mem:
@@ -392,7 +405,14 @@ class Handler(BaseHTTPRequestHandler):
                               "attachments": [a.meta() for a in atts], "notes": notes + problems})
         start = time.time()
 
-        if text.startswith("/") and not atts:
+        if reminders.is_reminder_request(text) and not atts and hasattr(host, "add_reminder_text"):
+            emit({"type": "route", "model": "laptop", "label": "Reminders", "where": "laptop"})
+            ok, answer = host.add_reminder_text(text, "phone")
+            if ok:
+                answer += "\nYou'll get it on the laptop, and here while this app is open."
+            emit({"type": "token", "text": answer})
+            route_name, used, stopped, meta = "laptop", [], False, "Reminders"
+        elif text.startswith("/") and not atts:
             emit({"type": "route", "model": "laptop", "label": "Laptop", "where": "laptop"})
             answer = tools.run(text, _Ctx(srv))
             emit({"type": "token", "text": answer})
