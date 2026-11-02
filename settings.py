@@ -43,6 +43,12 @@ DEFAULTS = {
     },
     "memory_setup_done": False,    # the one-time question about chats saved before memory existed
     "memory_keep_ids": [],         # chats you chose to keep in full
+    "quickask": {
+        "enabled": True,
+        "hotkey": "ctrl+shift+space",
+        "never_apps": None,        # None = quickask.DEFAULT_NEVER (password managers)
+        "whole_screen": False,     # capture only the active window by default
+    },
     "code_projects": [],           # folders added in the Code window
     "code_last": None,
     "access": {

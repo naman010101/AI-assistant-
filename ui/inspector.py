@@ -237,6 +237,62 @@ class Inspector(ctk.CTkFrame):
                               command=self.on_open_memory).grid(row=row_next(), column=0, sticky="w",
                                                                 padx=12, pady=(8, 0))
 
+        # ---- Quick Ask ----
+        if st:
+            import quickask
+            qa = st.get("quickask", {})
+
+            def set_qa(key, value):
+                cfg = dict(st.get("quickask", {}))
+                cfg[key] = value
+                on_setting("quickask", cfg)
+
+            label("Quick Ask")
+            note("A hotkey that opens a small ask box over any app, with what's on screen and the text "
+                 "you selected. Captured content goes to local models only.")
+            switch("Quick Ask hotkey", "Works while this app is open (it can be minimised)",
+                   lambda: qa.get("enabled", True), lambda v: set_qa("enabled", v))
+            row = ctk.CTkFrame(p, fg_color="transparent")
+            row.grid(row=row_next(), column=0, sticky="ew", padx=12, pady=(8, 0))
+            row.grid_columnconfigure(0, weight=1)
+            hk = ctk.CTkEntry(row, height=30, corner_radius=8, font=Fonts.mono(12), fg_color=C["card"],
+                              border_color=C["border2"], text_color=C["text"])
+            hk.insert(0, qa.get("hotkey") or quickask.DEFAULT_HOTKEY)
+            hk.grid(row=0, column=0, sticky="ew")
+
+            def apply_hotkey():
+                combo = hk.get().strip().lower()
+                try:
+                    quickask.parse_hotkey(combo)
+                except ValueError as e:
+                    self.add_log(f"hotkey not valid: {e}", "warn")
+                    return
+                set_qa("hotkey", combo)
+
+            ctk.CTkButton(row, text="Set", width=54, height=30, corner_radius=8, font=Fonts.ui(12),
+                          fg_color="transparent", hover_color=C["raised"], border_width=1,
+                          border_color=C["border2"], text_color=C["text2"],
+                          command=apply_hotkey).grid(row=0, column=1, padx=(6, 0))
+            switch("Capture the whole screen", "Off: only the window you're working in",
+                   lambda: qa.get("whole_screen", False), lambda v: set_qa("whole_screen", v))
+            note("Never capture these apps (.exe names, comma separated). Windows titled like passwords, "
+                 "banking or private browsing are never captured either.")
+            never = ctk.CTkEntry(p, height=30, corner_radius=8, font=Fonts.mono(11), fg_color=C["card"],
+                                 border_color=C["border2"], text_color=C["text"])
+            never.insert(0, ", ".join(qa.get("never_apps") or quickask.DEFAULT_NEVER))
+            never.grid(row=row_next(), column=0, sticky="ew", padx=12, pady=(6, 0))
+            never.bind("<FocusOut>", lambda e: set_qa("never_apps", [x.strip() for x in never.get().split(",")
+                                                                      if x.strip()]))
+            try:
+                import winrt.windows.media.ocr  # noqa: F401
+                ocr_state = "Windows OCR: ready (screen text works with any model)"
+            except Exception:
+                ocr_state = ("Windows OCR: not installed, so screen questions use the vision model. "
+                             "To add it: venv\\Scripts\\python -m pip install winrt-runtime "
+                             "winrt-Windows.Media.Ocr winrt-Windows.Graphics.Imaging winrt-Windows.Storage.Streams "
+                             "winrt-Windows.Globalization winrt-Windows.Foundation winrt-Windows.Foundation.Collections")
+            note(ocr_state)
+
         # ---- Access ----
         if st and self.gate:
             label("Access")

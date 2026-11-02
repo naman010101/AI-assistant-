@@ -38,6 +38,7 @@ import attachments  # noqa: E402
 import context  # noqa: E402
 import editor  # noqa: E402
 import memory  # noqa: E402
+import quickask  # noqa: E402
 import router  # noqa: E402
 import access  # noqa: E402
 from access import AccessGate  # noqa: E402
@@ -51,6 +52,7 @@ from ui.composer import Composer  # noqa: E402
 from ui.diff_view import DiffWindow  # noqa: E402
 from ui.memory_view import MemoryWindow  # noqa: E402
 from ui.code_view import CodeWindow  # noqa: E402
+from ui.quickask_view import QuickAskPopup  # noqa: E402
 from ui.inspector import Inspector  # noqa: E402
 from ui.sidebar import Sidebar  # noqa: E402
 from ui.theme import C, Fonts, model_label, where  # noqa: E402
@@ -113,6 +115,9 @@ class HybridAIApp(ctk.CTk):
         self.complete = memory.ollama_completer(router.MODELS["local-general"][0])
         self.complete_text = memory.ollama_completer(router.MODELS["local-general"][0], json_mode=False)
         self.digesting = set()       # chats whose older messages are being summarised
+        self.hotkey = None           # Quick Ask's global hotkey
+        self.quick_popup = None
+        self._qa_busy = False
         self.summarising = set()     # chats waiting for / being summarised
         self.summary_failures = {}   # conv id -> failed attempts this run
         self._summary_lock = threading.Lock()  # one summary at a time
@@ -136,6 +141,7 @@ class HybridAIApp(ctk.CTk):
         self.inspector.set_recent_edits(editor.recent_edits(8), self._undo_record)
         self._refresh_sidebar()
         self.after(600, self._memory_startup)
+        self.after(800, self._start_hotkey)
 
         self.bind_all("<Control-n>", lambda e: self.new_chat())
         self.bind_all("<Escape>", lambda e: self.stop())
@@ -274,6 +280,8 @@ class HybridAIApp(ctk.CTk):
 
     def _on_close(self):
         # The open chat stays saved; it is summarised the next time the app starts.
+        if self.hotkey:
+            self.hotkey.stop()
         if self.gen:
             self.gen["stop"].set()
         if self.store:
@@ -341,6 +349,8 @@ class HybridAIApp(ctk.CTk):
 
     def _set_setting(self, key, value):
         self.settings.set(key, value)
+        if key == "quickask":
+            self._start_hotkey()
         if key == "show_meta" and not self.gen:
             self._render_active()
 
@@ -593,6 +603,8 @@ class HybridAIApp(ctk.CTk):
                     statuses.append(("__summarised__",) + tuple(ev[1:]))
                 elif ev[0] == "summary_failed":
                     statuses.append(("__summary_failed__",) + tuple(ev[1:]))
+                elif ev[0] == "quickask":
+                    statuses.append(("__quickask__",))
                 elif ev[0] == "digested":
                     statuses.append(("__digested__",) + tuple(ev[1:]))
                 elif self.gen and ev[0] == self.gen["id"]:
@@ -614,6 +626,8 @@ class HybridAIApp(ctk.CTk):
                     self.inspector.add_log(st[1], st[2])
                 elif st[0] == "__summarised__":
                     self._on_summarised(*st[1:])
+                elif st[0] == "__quickask__":
+                    self._quick_ask()
                 elif st[0] == "__digested__":
                     self._on_digested(*st[1:])
                 elif st[0] == "__summary_failed__":
@@ -904,6 +918,183 @@ class HybridAIApp(ctk.CTk):
         self.conversations.pop(conv_id, None)
         if conv_id in self.order:
             self.order.remove(conv_id)
+
+    # ================= Quick Ask =================
+    def _start_hotkey(self):
+        """(Re)register the global hotkey from the settings."""
+        if self.hotkey:
+            self.hotkey.stop()
+            self.hotkey = None
+        cfg = self.settings.get("quickask", {})
+        if not cfg.get("enabled", True):
+            return
+        combo = cfg.get("hotkey") or quickask.DEFAULT_HOTKEY
+        try:
+            hk = quickask.HotkeyListener(combo, lambda: self.events.put(("quickask",)))
+        except ValueError as e:
+            self.inspector.add_log(f"Quick Ask hotkey “{combo}” isn't valid: {e}", "warn")
+            return
+        if hk.start():
+            self.hotkey = hk
+            self.inspector.add_log(f"Quick Ask: press {combo.title()} in any app")
+        else:
+            self.inspector.add_log(f"Quick Ask unavailable: {hk.error}", "warn")
+
+    def _quick_ask(self):
+        """The hotkey was pressed: capture the window and the selection, then
+        open the popup. Runs on the main thread."""
+        if self.quick_popup is not None and self.quick_popup.winfo_exists():
+            self.quick_popup.lift()
+            self.quick_popup.focus_force()
+            return
+        if self._qa_busy:
+            return
+        acc = self.settings.access
+        cfg = self.settings.get("quickask", {})
+        info = quickask.foreground()
+        own = info.get("pid") == os.getpid()
+        reason = "" if own else quickask.never_capture(info, cfg.get("never_apps") or quickask.DEFAULT_NEVER)
+        notes, image = [], None
+        if own:
+            info = {**info, "app": "Hybrid AI"}
+        elif not reason:
+            if acc.get("screen_capture", True):
+                image = quickask.capture(info, cfg.get("whole_screen", False))
+            else:
+                notes.append("Screen capture is off (Settings → Access).")
+        ctx = {"info": info, "image": image, "selection": None, "blocked_reason": reason, "notes": notes}
+        if own or reason:
+            return self._open_quick(ctx)
+        if not acc.get("clipboard", True):
+            notes.append("Reading the selection is off (Settings → Access).")
+            return self._open_quick(ctx)
+        if quickask.clipboard_has_only_nontext():
+            notes.append("Your clipboard holds an image or files, so the selection wasn't read "
+                         "(it would have been overwritten).")
+            return self._open_quick(ctx)
+        # Read the selection: put a marker on the clipboard, press Ctrl+C in
+        # that app, see what arrives, then put your clipboard back.
+        try:
+            old = self.clipboard_get()
+        except Exception:
+            old = None
+        marker = f"⁣hybridai-{time.time()}"
+        self.clipboard_clear()
+        self.clipboard_append(marker)
+        self.update()
+        self._qa_busy = True
+        quickask.send_copy()
+        self.after(60, lambda: self._wait_copy(ctx, old, marker, 8))
+
+    def _wait_copy(self, ctx, old, marker, tries):
+        try:
+            now = self.clipboard_get()
+        except Exception:
+            now = None
+        if (now is None or now == marker) and tries > 0:
+            self.after(50, lambda: self._wait_copy(ctx, old, marker, tries - 1))
+            return
+        sel = now if now and now != marker else None
+        self.clipboard_clear()
+        if old is not None:
+            self.clipboard_append(old)
+        self.update()
+        self._qa_busy = False
+        ctx["selection"] = sel.strip() if sel and sel.strip() else None
+        self._open_quick(ctx)
+
+    def _open_quick(self, ctx):
+        self.quick_popup = QuickAskPopup(
+            self, ctx, ask_fn=lambda *a, **k: self.quick_ask_worker(ctx, *a, **k),
+            on_open_in_app=self.import_quick_chat, on_replace=self._replace_selection)
+
+    def quick_ask_worker(self, ctx, history, question, action, use_screen, use_sel,
+                         on_token, on_done, should_stop, on_model):
+        """One Quick Ask answer (worker thread). Captured content (screen,
+        selection) goes to a local model unless 'Files and the cloud' is set
+        to Always send."""
+        info = ctx.get("info") or {}
+        first = not history
+        sel = ctx.get("selection") if (use_sel and first) else None
+        img = ctx.get("image") if (use_screen and first) else None
+        model = self.model
+        captured = bool(sel or img)
+        if captured and where(model) == "Cloud" and self.settings.get("cloud_files", "ask") != "allow":
+            model = router.DEFAULT_MODEL
+            self.events.put(("log", "Quick Ask: captured content stays local, so a local model answered"))
+        screen_text, image_att = None, None
+        if img is not None:
+            text = quickask.ocr(img)
+            if text and text.strip():
+                screen_text = text
+            elif quickask.ocr.last_error:
+                self.events.put(("log", f"Quick Ask: {quickask.ocr.last_error}", "warn"))
+            vision_ready = self.ollama_models is None or router.MODELS[VISION_KEY][0] in self.ollama_models
+            if (not screen_text or model in router.VISION_MODELS) and vision_ready:
+                image_att = attachments.load_image(img, name="screen.png")
+                if model not in router.VISION_MODELS:
+                    model = VISION_KEY
+            elif not screen_text:
+                on_token("I couldn't read the screen: Windows OCR isn't set up and the vision model isn't "
+                         f"installed. Run `ollama pull {router.MODELS[VISION_KEY][0]}` (see the Log tab for OCR).")
+                on_done(model)
+                return
+        if first:
+            prompt = quickask.build_prompt(question, sel, screen_text, info.get("app"), info.get("title"), action)
+        else:
+            prompt = question or (quickask.ACTIONS[action] + " (Apply it to the same text as before.)")
+        content = prompt if image_att is None else [
+            {"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": image_att.image_url}}]
+        system = None
+        mem_cfg = self.settings.get("memory", {})
+        if self.mem and mem_cfg.get("enabled", True) and (where(model) == "Local" or mem_cfg.get("cloud")):
+            try:
+                system = memory.context_block([], self.mem.user_facts())
+            except Exception:
+                system = None
+        on_model(model)
+        try:
+            stream_chat(history, question or action or "Explain this", "manual", on_token=on_token,
+                        on_done=lambda r, why, ms: on_done(r), model_override=model,
+                        should_stop=should_stop, content=content, system=system,
+                        fit_args={"budget": int(self.settings.get("context_tokens", 8192))})
+        except Exception as e:
+            on_token(f"\n\nError: {e}")
+            on_done(model)
+
+    def import_quick_chat(self, history, turns):
+        """'Open in app': continue a Quick Ask chat in the main window."""
+        if self.gen:
+            return
+        first = next((t["text"] for t in turns if t["role"] == "user"), "Quick Ask")
+        conv = Conversation(title=("Quick Ask: " + first)[:40])
+        conv.history = list(history)
+        now = time.time()
+        conv.turns = [{**t, "at": now} for t in turns]
+        self.conversations[conv.id] = conv
+        self.order.insert(0, conv.id)
+        self.select_chat(conv.id)
+        self._save(conv)
+
+    def _replace_selection(self, text, ctx):
+        """Put the answer where your selection was (paste it into that app)."""
+        try:
+            old = self.clipboard_get()
+        except Exception:
+            old = None
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update()
+        quickask.focus((ctx.get("info") or {}).get("hwnd"))
+
+        def restore():
+            self.clipboard_clear()
+            if old is not None:
+                self.clipboard_append(old)
+            self.update()
+
+        self.after(200, quickask.send_paste)
+        self.after(900, restore)
 
     # ================= code explainer =================
     def open_code(self):
