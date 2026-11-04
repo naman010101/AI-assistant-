@@ -115,7 +115,7 @@ class PhoneServer:
     def __init__(self, host, port=8765, lan=True, db_path=None):
         self.host, self.port, self.lan = host, port, lan
         self.token = load_token()
-        self.store = Store(db_path or config.DB_PATH)
+        self.store = Store(db_path or config.DB_PATH, upgrade=False)  # only the desktop app upgrades (1.5)
         self.busy = threading.Lock()          # one phone reply at a time
         self.busy_conv = None
         self.httpd = None

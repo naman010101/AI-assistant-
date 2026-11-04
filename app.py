@@ -279,6 +279,11 @@ class HybridAIApp(ctk.CTk):
             self.store = None
             self.inspector.add_log(f"could not open chat history: {e}", "warn")
             return
+        if self.store.upgrade_note:
+            ok = self.store.version == 2
+            self.inspector.add_log(self.store.upgrade_note, None if ok else "warn")
+            if not ok:
+                self.composer.show_notice(self.store.upgrade_note, "warn", seconds=15)
         for c in saved:
             conv = Conversation(c["id"], c["title"], c["history"], c["turns"], c["created"], c.get("meta"))
             self.conversations[conv.id] = conv

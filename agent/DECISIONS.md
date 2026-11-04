@@ -22,6 +22,7 @@
 - Reminder/brief times are local time. Phone token and file links are signed; never log the token.
 - No automatic cloud routing; never send private content to the cloud without the confirm step.
 - Migration backups (1.9): before moving old chats/.env out of the project folder, the raw files are copied to `%LOCALAPPDATA%\HybridAI\backups\migration-<timestamp>\` and the move is refused if that backup fails. The backup is a second copy of the chats, kept in the private folder; clean-up is a later step. Only one app copy runs per data folder (named `Local\` mutex); Cancel on a stopped migration exits the app.
+- Chat storage (1.5): `chats.db` is format 2 (`PRAGMA user_version = 2`; tables `chats`, `chat_turns`, `chat_messages`). Old (v1) databases are migrated in place, in one transaction, only after `sqlite3` backup into `%LOCALAPPDATA%\HybridAIackups\chats-v1-<timestamp>.db` has been checked (quick_check, row counts, free space >= 3x size + 100 MB). If the backup or the migration fails, nothing is changed and the app runs on the old layout (v1 mode, kept until Phase 2). The backup is never deleted automatically (it still holds full text of chats later summarised); its path is shown in the Log tab. The phone server never migrates. No VACUUM.
 
 ## Capabilities note (to build)
 The system prompt should say, in plain words: the app can read files the user attaches or pastes a path for, edit them
