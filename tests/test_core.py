@@ -199,14 +199,22 @@ def test_binary_and_unsupported(tmp_path):
 
 
 def test_pdf(tmp_path):
-    pytest.importorskip("reportlab", reason="reportlab is only used to build this test PDF and is not in requirements.txt")
-    from reportlab.pdfgen import canvas
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
     p = tmp_path / "notes.pdf"
-    c = canvas.Canvas(str(p))
-    c.drawString(72, 720, "Dynamic programming notes page one")
-    c.showPage()
-    c.drawString(72, 720, "Second page about memoization")
-    c.save()
+    w = PdfWriter()
+    font = w._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica")}))
+    for line in ("Dynamic programming notes page one", "Second page about memoization"):
+        page = w.add_blank_page(width=612, height=792)
+        stream = DecodedStreamObject()
+        stream.set_data(f"BT /F1 12 Tf 72 720 Td ({line}) Tj ET".encode())
+        page[NameObject("/Contents")] = w._add_object(stream)
+        page[NameObject("/Resources")] = DictionaryObject({
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
+    with open(p, "wb") as f:
+        w.write(f)
     a = A.load_file(str(p))
     assert a.kind == "pdf" and a.detail == "2 pages"
     assert "page 1" in a.text and "memoization" in a.text
