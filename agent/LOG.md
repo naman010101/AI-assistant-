@@ -56,3 +56,7 @@ Per-module coverage (`python -m coverage report --omit="venv/*,.claude/*,tests/*
 | `ui\sidebar.py` | 110 | 110 | 0% |
 | `ui\theme.py` | 37 | 37 | 0% |
 | **TOTAL** | **6075** | **4164** | **31%** |
+
+## 2026-11-04: Phase 0 reviewed after merge
+
+Phase 0 was reviewed after the merge (3 of 4 Done-when items passed; the docs item was open). Follow-ups are on branch `v2/phase-0-followups`: safe log start-up, migration and pre-stream errors logged, quieter warnings, `HYBRIDAI_LOG_LEVEL`, pinned `pyproject.toml`, Phase 8 dropped from the docs.
