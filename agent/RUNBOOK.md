@@ -14,7 +14,7 @@ DEBUG also writes the per-tick lines that INFO hides.
 
 ## Tests
 `python -m pytest tests -q` → expected 66 passed, 1 skipped (Tk-free; widgets are stubbed).
-Files: test_core, test_editor, test_memory, test_context, test_codeexplain, test_quickask, test_phone, test_reminders, test_internship.
+Files: test_core, test_editor, test_memory, test_context, test_codeexplain, test_quickask, test_phone, test_reminders, test_log_setup, test_no_silent_except.
 `python eval_memory.py` and `memory_check.py` need Ollama running.
 
 ## Cloud workspace (the agent's machine)
@@ -28,7 +28,7 @@ Files: test_core, test_editor, test_memory, test_context, test_codeexplain, test
 2. `device_commit_files` with `devicePath` under `~/mnt/Local_ai_model/hybrid-ai/...` (use `force` only if the owner edited it).
 3. On the laptop: parse-check (`python -m py_compile`), run tests, then `git add -A` and `git commit`.
 4. Do not delete files on the laptop without `device_request_delete_permission`. Leftover `.git/*.lock` files are safe to remove after asking.
-5. Tell the owner to run `git push` (commits so far: Phases 0–7 are committed; Phase 8 is not).
+5. Tell the owner to run `git push` (commits so far: Phases 0–7).
 
 ## Commit message style
 `Phase N: short description` (see `git log`). End with the attribution lines the session asks for.
