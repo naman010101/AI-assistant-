@@ -10,9 +10,12 @@ a folder connected to an AI tool). The project folder only holds code.
 
 Set HYBRID_AI_DATA_DIR to use a different folder.
 """
+import logging
 import os
 import shutil
 import sqlite3
+
+log = logging.getLogger("hybridai")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = "HybridAI"
@@ -60,18 +63,18 @@ def migrate_legacy():
                 con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 con.close()
             except sqlite3.Error:
-                pass
+                log.exception("couldn't checkpoint the old chats database before moving it")
             shutil.move(LEGACY_DB, DB_PATH)
             for side in ("-wal", "-shm"):
                 if os.path.exists(LEGACY_DB + side):
                     try:
                         os.remove(LEGACY_DB + side)
                     except OSError:
-                        pass
+                        log.exception("couldn't remove an old chats side file")
             try:
                 os.rmdir(os.path.dirname(LEGACY_DB))  # only if now empty
             except OSError:
-                pass
+                log.exception("couldn't remove the old data folder")
             notes.append(f"moved your chats to {DB_PATH}")
 
     # .env (API keys)

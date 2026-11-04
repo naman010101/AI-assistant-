@@ -16,6 +16,7 @@ Privacy:
 import copy
 import itertools
 import json
+import logging
 import os
 import queue
 import threading
@@ -29,6 +30,8 @@ import config
 import log_setup
 
 log_setup.setup()
+
+log = logging.getLogger("hybridai")
 
 # Move data that older versions kept in the project folder BEFORE anything
 # reads it (router.py loads the API keys on import).
@@ -102,7 +105,7 @@ class HybridAIApp(ctk.CTk):
         try:
             self.iconbitmap(os.path.join(BASE_DIR, "icon.ico"))
         except Exception:
-            pass  # .ico only works on Windows
+            log.exception("couldn't set the window icon")  # .ico only works on Windows
 
         # ---- state ----
         self.settings = Settings()
@@ -651,7 +654,7 @@ class HybridAIApp(ctk.CTk):
                         done = ev[2:]
                 # events from an older generation are ignored
         except queue.Empty:
-            pass
+            log.debug("no more UI events this tick", exc_info=True)
 
         try:
             for st in statuses:
@@ -1165,7 +1168,7 @@ class HybridAIApp(ctk.CTk):
                     if ch:
                         changes.append((p.name, len(ch)))
         except Exception:
-            pass
+            log.exception("couldn't check code projects for the brief")
         return reminders.brief(self.rem, mem=self.mem, project_changes=changes)
 
     def show_brief(self):
@@ -1482,7 +1485,7 @@ class HybridAIApp(ctk.CTk):
             try:
                 self._show_edits(conv, turn_idx, msg)
             except Exception:
-                pass
+                log.exception("couldn't refresh the edit list in a chat")
         self._save(conv)
         self.inspector.set_recent_edits(editor.recent_edits(8), self._undo_record)
 
@@ -1551,7 +1554,7 @@ class HybridAIApp(ctk.CTk):
             try:
                 e["restored_sha"] = editor.sha_file(e["path"])
             except OSError:
-                pass
+                log.exception("couldn't read the restored file's hash after undo")
             self._refresh_edit_row(conv, turn_idx)
 
     def _undo_record(self, record):
@@ -1589,7 +1592,7 @@ class HybridAIApp(ctk.CTk):
                         try:
                             e["restored_sha"] = editor.sha_file(e["path"])
                         except OSError:
-                            pass
+                            log.exception("couldn't read the restored file's hash to update a chat's edit status")
                         self._refresh_edit_row(c, i)
         return True
 
@@ -1623,7 +1626,7 @@ class HybridAIApp(ctk.CTk):
                     if n:
                         q.put(("log", f"memory: indexed {n} summar{'ies' if n != 1 else 'y'} for search"))
                 except Exception:
-                    pass
+                    log.exception("couldn't index summaries saved without the embedding model")
 
         threading.Thread(target=work, daemon=True).start()
         self.after(HEALTH_EVERY_MS, self._health_check)

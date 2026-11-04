@@ -6,9 +6,13 @@
 
 Returns the key of the button pressed, or None if the window was closed.
 """
+import logging
+
 import customtkinter as ctk
 
 from .theme import C, Fonts
+
+log = logging.getLogger("hybridai")
 
 
 def ask(master, title, message, buttons, primary=None, detail=None):
@@ -59,7 +63,7 @@ def ask(master, title, message, buttons, primary=None, detail=None):
         win.wait_visibility()
         win.grab_set()
     except Exception:
-        pass
+        log.exception("couldn't grab the dialog (it still works without the grab)")
     win.focus_force()
     master.wait_window(win)
     return result["key"]

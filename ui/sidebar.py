@@ -1,10 +1,13 @@
 """Left navigation: brand, new chat, sections, recent chats, provider status."""
+import logging
 import os
 import tkinter as tk
 
 import customtkinter as ctk
 
 from .theme import C, Fonts, section_label
+
+log = logging.getLogger("hybridai")
 
 
 class Sidebar(ctk.CTkFrame):
@@ -151,7 +154,7 @@ class Sidebar(ctk.CTkFrame):
                 img = ctk.CTkImage(Image.open(icon_path), size=(30, 30))
                 return ctk.CTkLabel(master, text="", image=img, width=30)
             except Exception:
-                pass
+                log.exception("couldn't load the logo image")
         return ctk.CTkLabel(master, text="H", width=30, height=30, corner_radius=9,
                             fg_color=C["accent"], text_color=C["on_accent"], font=Fonts.ui(14, "bold"))
 

@@ -12,11 +12,14 @@ A command is `fn(args, ctx) -> str` returning Markdown; ctx gives:
 """
 import html
 import json
+import logging
 import os
 import re
 import time
 import urllib.parse
 import urllib.request
+
+log = logging.getLogger("hybridai")
 
 FIND_LIMIT = 15
 FIND_SECONDS = 8
@@ -100,7 +103,7 @@ def cmd_screenshot(args, ctx):
         try:
             os.remove(os.path.join(ctx.shots_dir, old))
         except OSError:
-            pass
+            log.exception("couldn't delete an old screenshot")
     path = os.path.join(ctx.shots_dir, time.strftime("screen_%Y%m%d_%H%M%S.jpg"))
     img.save(path, quality=80)
     return f"Laptop screen at {time.strftime('%H:%M:%S')}:\n\n![screenshot]({ctx.link(path)})"
