@@ -26,6 +26,9 @@ import uuid
 import customtkinter as ctk
 
 import config
+import log_setup
+
+log_setup.setup()
 
 # Move data that older versions kept in the project folder BEFORE anything
 # reads it (router.py loads the API keys on import).
