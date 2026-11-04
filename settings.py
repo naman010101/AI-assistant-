@@ -5,10 +5,14 @@ breaks the app; new options added later simply appear with their default.
 """
 import copy
 import json
+import logging
 import os
+import shutil
 import threading
 
 import config
+
+log = logging.getLogger("hybridai")
 
 
 def _default_folders():
@@ -58,7 +62,7 @@ DEFAULTS = {
     "phone": {
         "enabled": False,          # off until you turn it on in Settings → Phone
         "port": 8765,
-        "lan": True,               # reachable over Wi-Fi/Tailscale IP; off = only via `tailscale serve`
+        "lan": False,              # reachable over Wi-Fi/Tailscale IP; off = only via `tailscale serve`
         "public_url": "",          # e.g. https://laptop.tail1234.ts.net from `tailscale serve`
     },
     "brief": {"enabled": True, "time": "08:00", "last": None},
@@ -116,8 +120,22 @@ class Settings:
             if self.data.get("memory", {}).get("threshold") == 0.55:
                 self.data["memory"]["threshold"] = 0.5
             self.data["settings_version"] = 1
-            if os.path.exists(self.path):
-                self.save()
+            changed = True
+        else:
+            changed = False
+        if v < 2:  # phone.lan now defaults to off (step 1.3)
+            ph = self.data.get("phone", {})
+            if not ph.get("enabled"):
+                ph["lan"] = False  # the server is off, so nothing breaks
+            elif ph.get("lan"):
+                log.warning("Phone is reachable on Wi-Fi; turn it off in Settings -> Phone for safety.")
+            self.data["settings_version"] = 2
+            changed = True
+        if changed and os.path.exists(self.path):
+            bak = os.path.join(os.path.dirname(self.path), "settings.v1.bak")
+            if not os.path.exists(bak):
+                shutil.copy2(self.path, bak)  # back up before the upgrade saves
+            self.save()
 
     def _read(self):
         try:

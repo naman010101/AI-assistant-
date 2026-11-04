@@ -996,7 +996,7 @@ class HybridAIApp(ctk.CTk):
             self.sidebar.set_status("Phone", "unknown", "off")
             return
         import phone
-        srv = phone.PhoneServer(self, port=int(cfg.get("port", 8765)), lan=cfg.get("lan", True))
+        srv = phone.PhoneServer(self, port=int(cfg.get("port", 8765)), lan=cfg.get("lan", False))
         if srv.start():
             self.phone = srv
             self.sidebar.set_status("Phone", "ok", f"port {srv.port}")
@@ -1015,12 +1015,18 @@ class HybridAIApp(ctk.CTk):
         webbrowser.open(f"http://localhost:{int(cfg.get('port', 8765))}/pair")
 
     def reset_phone_token(self):
+        choice = dialogs.ask(self, "Reset phone token?", "Every paired phone will be disconnected and must pair again.",
+                             [("reset", "Reset token"), ("cancel", "Cancel")], primary="cancel")
+        if choice != "reset":
+            return
         if self.phone:
             self.phone.reset_token()
         else:
             import phone
             phone.load_token(new=True)
         self.inspector.add_log("phone: all paired phones disconnected (pair again with the new QR code)", "warn")
+        dialogs.info(self, "Phone token reset",
+                     "Phone token reset. Click 'Pair a phone (QR)' and open the new link on your phone.")
 
     def _reload_conv(self, conv_id):
         """A chat changed on the phone: take the saved version."""

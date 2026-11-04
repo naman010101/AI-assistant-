@@ -147,7 +147,7 @@ def test_settings_upgrade_threshold(tmp_path, monkeypatch):
     importlib.reload(settings)
     (tmp_path / "settings.json").write_text(json.dumps({"memory": {"threshold": 0.55}, "access": {"folders": []}}))
     s = settings.Settings()
-    assert s.get("memory")["threshold"] == 0.5 and s.get("settings_version") == 1
+    assert s.get("memory")["threshold"] == 0.5 and s.get("settings_version") == 2
     s.set("memory", {**s.get("memory"), "threshold": 0.62})
     assert settings.Settings().get("memory")["threshold"] == 0.62  # user's own value kept
 
