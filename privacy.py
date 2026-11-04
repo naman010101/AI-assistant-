@@ -26,6 +26,7 @@ _LABELS = {"email": "email", "api_key": "API key", "token": "token",
            "private_key": "private key", "secret": "secret value", "path": "path"}
 
 _PH_RE = re.compile(r"\[(?:EMAIL|API_KEY|TOKEN|PRIVATE_KEY|SECRET|PATH)_\d+\]", re.I)
+PLACEHOLDER_RE = _PH_RE  # public: other modules (editor) use it to spot placeholders
 _PH_ONLY = re.compile(r"\[[A-Z_]+_\d+\]")
 _PH_PREFIX = re.compile(r"\[[A-Za-z_0-9]*")
 _MAX_HOLD = 25  # a "[" plus up to 24 characters

@@ -49,16 +49,17 @@ class DiffWindow(ctk.CTkToplevel):
                      ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # ---- warnings ----
-        self.has_error = any(level == "error" for level, _ in warnings)
+        self.has_block = any(level == "block" for level, _ in warnings)
+        self.has_error = any(level in ("error", "block") for level, _ in warnings)
         warn_box = ctk.CTkFrame(self, fg_color="transparent")
         warn_box.grid(row=1, column=0, sticky="ew", padx=20)
         for level, msg in warnings:
             box = ctk.CTkFrame(warn_box, corner_radius=8, border_width=1,
-                               fg_color=C["stop_bg"] if level == "error" else C["accent_bg"],
-                               border_color=C["stop_border"] if level == "error" else C["accent_border"])
+                               fg_color=C["stop_bg"] if level in ("error", "block") else C["accent_bg"],
+                               border_color=C["stop_border"] if level in ("error", "block") else C["accent_border"])
             box.pack(fill="x", pady=(0, 6))
-            ctk.CTkLabel(box, text=("⛔ " if level == "error" else "⚠ ") + msg, font=Fonts.ui(12),
-                         text_color=C["stop_fg"] if level == "error" else C["warn"], justify="left",
+            ctk.CTkLabel(box, text=("⛔ " if level in ("error", "block") else "⚠ ") + msg, font=Fonts.ui(12),
+                         text_color=C["stop_fg"] if level in ("error", "block") else C["warn"], justify="left",
                          anchor="w", wraplength=1080).pack(fill="x", padx=12, pady=7)
 
         # ---- the two panes ----
@@ -102,11 +103,12 @@ class DiffWindow(ctk.CTkToplevel):
         ctk.CTkLabel(bar, text="A backup of the current file is saved before anything is written. "
                                "You can undo from the chat or Settings.",
                      font=Fonts.ui(12), text_color=C["muted"]).pack(side="left")
-        ctk.CTkButton(bar, text="Apply anyway" if self.has_error else "Apply", width=130, height=38,
-                      corner_radius=8, font=Fonts.ui(13, "bold"),
-                      fg_color=C["stop_fg"] if self.has_error else C["accent"],
-                      hover_color="#FFC4C4" if self.has_error else C["accent_hi"],
-                      text_color=C["on_accent"], command=self._apply).pack(side="right")
+        if not self.has_block:
+            ctk.CTkButton(bar, text="Apply anyway" if self.has_error else "Apply", width=130, height=38,
+                          corner_radius=8, font=Fonts.ui(13, "bold"),
+                          fg_color=C["stop_fg"] if self.has_error else C["accent"],
+                          hover_color="#FFC4C4" if self.has_error else C["accent_hi"],
+                          text_color=C["on_accent"], command=self._apply).pack(side="right")
         ctk.CTkButton(bar, text="Discard", width=100, height=38, corner_radius=8, font=Fonts.ui(13),
                       fg_color="transparent", hover_color=C["raised"], border_width=1,
                       border_color=C["border2"], text_color=C["text2"],

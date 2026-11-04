@@ -25,6 +25,8 @@ import time
 
 import config
 
+import privacy
+
 log = logging.getLogger("hybridai")
 
 EDITABLE_KINDS = {"code", "text"}
@@ -136,8 +138,17 @@ def _proposal(f, new_text):
 # ---------------------------------------------------------------- checks
 def checks(path, old, new, base_sha=None):
     """Warnings to show before Apply: list of (level, message), level is
-    'error' (Apply becomes 'Apply anyway') or 'warn'."""
+    'block' (no Apply at all), 'error' (Apply becomes 'Apply anyway') or 'warn'."""
     out = []
+    # A privacy placeholder the model wrote into NEW text is not the user's real value, so
+    # applying would corrupt the file. Only placeholders absent from the old text count: one
+    # already in the file and still there is the user's own text. Level "block" = no Apply.
+    old_ph = {m.upper() for m in privacy.PLACEHOLDER_RE.findall(old)}
+    for ph in dict.fromkeys(m.upper() for m in privacy.PLACEHOLDER_RE.findall(new)):
+        if ph not in old_ph:
+            out.append(("block", f"Not applied: the edit contains {ph}, a placeholder from the "
+                                 "privacy filter, not your real value. Ask again or edit by hand."))
+            break
     if old == new:
         out.append(("warn", "The proposed version is identical to the current file."))
     if base_sha and os.path.exists(path):

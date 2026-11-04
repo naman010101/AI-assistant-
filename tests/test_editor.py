@@ -114,3 +114,38 @@ def test_cp1252_file_stays_cp1252(ed, tmp_path):
     path = _file(tmp_path, "notes.py", text, enc="cp1252")
     ed.apply(path, text.replace("x = 1", "x = 2"))
     assert open(path, "rb").read().decode("cp1252") == "# résumé notes\nx = 2\n"
+
+
+def _blocks(w):
+    return [m for level, m in w if level == "block"]
+
+
+def test_checks_blocks_privacy_placeholder(ed, tmp_path):
+    path = _file(tmp_path)
+    new = SRC.replace("a + b", "a + b + 0  # key [API_KEY_1]")
+    b = _blocks(ed.checks(path, SRC, new))
+    assert len(b) == 1 and "Not applied" in b[0] and "[API_KEY_1]" in b[0]
+    assert "Ask again or edit by hand" in b[0]
+    for ph in ("[EMAIL_2]", "[TOKEN_3]", "[PRIVATE_KEY_1]", "[SECRET_1]", "[PATH_12]"):
+        assert _blocks(ed.checks(path, SRC, SRC + f"x = '{ph}'\n"))
+
+
+def test_checks_blocks_lowercase_placeholder(ed, tmp_path):
+    path = _file(tmp_path)
+    b = _blocks(ed.checks(path, SRC, SRC + "x = '[api_key_1]'\n"))
+    assert b and "[API_KEY_1]" in b[0]
+
+
+def test_checks_ordinary_brackets_do_not_block(ed, tmp_path):
+    path = _file(tmp_path)
+    new = SRC + "a = [1]\nb = list[0]\nc = '[PATH]'\nd = '[EMAIL_x]'\n"
+    assert _blocks(ed.checks(path, SRC, new)) == []
+
+
+def test_checks_placeholder_already_in_old_does_not_block(ed, tmp_path):
+    path = _file(tmp_path)
+    old = SRC + "KEY = '[API_KEY_1]'\n"
+    assert _blocks(ed.checks(path, old, old.replace("a + b", "b + a"))) == []
+    assert _blocks(ed.checks(path, old, old.replace("[API_KEY_1]", "[api_key_1]"))) == []
+    # a different, new placeholder still blocks
+    assert _blocks(ed.checks(path, old, old + "T = '[TOKEN_1]'\n"))
