@@ -58,25 +58,17 @@ Legend: `[x]` done and tested · `[ ]` not done · `[~]` partly done. Status as 
 - [x] Reminder store, popups with snooze, weekly timetable (typed or from a photo)
 - [x] Morning brief at a set time (laptop window + phone)
 
-## Phase 8 — Internship kit  [x] (built; **not yet on the laptop / not committed**)
-- [x] Skills coverage vs a job description (`internship.py`)
-- [x] Tailor resume bullets (only rewrites of text that is really in the resume); save as a new .docx
-- [x] Cover letter and interview-question prompts
-- [x] Application tracker
-- [x] UI window (`ui/internship_view.py`)
-- [x] Fixes: "+ File" text button, Quick Ask thread fix, Settings model radio sync
-- [ ] **Deliver to laptop and commit** (see RUNBOOK.md)
+> Phase 8 (internship kit) was dropped from v2: its files were never in the repo. Kept as a later idea in `V2_STEPS.md`.
 
 ## Next up (in this order)
-1. [ ] **Deliver Phase 8** to the laptop, run tests there, `git add -A`, commit.
-2. [ ] **Attach a whole folder** (owner hit this: the picker only takes files).
+1. [ ] **Attach a whole folder** (owner hit this: the picker only takes files).
    - "+ Folder" button and pasted folder path in `attachments.py` / `composer.py` / `app.py`
    - go through `AccessGate.check` for every file; skip secrets, binaries, `node_modules`, `.git`, `venv`
    - include a tree listing + most relevant files within the context budget (`build_message`, `_fair_shares`)
    - tell the user what was included / skipped
-3. [ ] **Tell the model what the app can do** with files, in a system note, so it stops saying
+2. [ ] **Tell the model what the app can do** with files, in a system note, so it stops saying
        "I don't have access to your files" (see DECISIONS.md → capabilities note).
-4. [ ] Optional: use OS accessibility trees (idea from `vercel-labs/agent-desktop`) to read the active app in
+3. [ ] Optional: use OS accessibility trees (idea from `vercel-labs/agent-desktop`) to read the active app in
        Quick Ask before falling back to OCR; later maybe "do this in an app" with step-by-step confirmation
        and the allowed-apps list. Needs the owner's go-ahead.
-5. [ ] Owner studying: auto-routing and keeping data from leaking to Gemini/Groq (do not build until asked).
+4. [ ] Owner studying: auto-routing and keeping data from leaking to Gemini/Groq (do not build until asked).

@@ -120,3 +120,5 @@ wrong, ideally with a screenshot.
 ## Later ideas
 
 (Add ideas that come up during a step here instead of doing them.)
+
+- Internship kit (old Phase 8): skills coverage vs a job description, resume tailoring, cover letter and interview prompts, application tracker. Dropped from v2 on 2026-11-04; its files were never in the repo.
