@@ -29,7 +29,7 @@ import customtkinter as ctk
 import config
 import log_setup
 
-log_setup.setup()
+log_setup.setup_safe()
 
 log = logging.getLogger("hybridai")
 

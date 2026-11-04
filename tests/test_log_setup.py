@@ -65,3 +65,14 @@ def test_stream_failure_is_logged(logger, tmp_path, monkeypatch):
     router.stream_chat([], "hi", mode="local-general")
     text = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")
     assert "model stream failed" in text and "ollama stopped mid-reply" in text
+
+
+def test_setup_safe_survives_a_logging_failure(monkeypatch, capsys):
+    import log_setup
+
+    def boom():
+        raise PermissionError("logs folder is locked")
+
+    monkeypatch.setattr(log_setup, "setup", boom)
+    assert log_setup.setup_safe() is None  # no exception escapes
+    assert "file logging is off" in capsys.readouterr().err

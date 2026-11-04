@@ -6,6 +6,7 @@ modules just use logging.getLogger("hybridai").
 import logging
 import logging.handlers
 import os
+import sys
 
 import config
 
@@ -34,3 +35,15 @@ def setup():
     setattr(handler, _TAG, True)
     logger.addHandler(handler)
     return logger
+
+
+def setup_safe():
+    """setup(), but a logging problem (read-only folder, antivirus or OneDrive
+    lock...) must never stop the app from starting: print one warning and carry
+    on without file logging. Returns the logger, or None if it couldn't be set up."""
+    try:
+        return setup()
+    except Exception as e:  # noqa: BLE001 - this is the whole point
+        # print() does nothing if there is no console (pythonw), so no guard needed
+        print(f"Hybrid AI: file logging is off ({type(e).__name__}: {e})", file=sys.stderr)
+        return None
