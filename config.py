@@ -73,8 +73,8 @@ def migrate_legacy():
                         log.exception("couldn't remove an old chats side file")
             try:
                 os.rmdir(os.path.dirname(LEGACY_DB))  # only if now empty
-            except OSError:
-                log.exception("couldn't remove the old data folder")
+            except OSError as _exc:
+                log.warning("couldn't remove the old data folder: %s", _exc)
             notes.append(f"moved your chats to {DB_PATH}")
 
     # .env (API keys)

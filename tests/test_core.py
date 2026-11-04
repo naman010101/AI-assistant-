@@ -334,3 +334,18 @@ def test_router_manual_and_text_only(monkeypatch):
                                          {"type": "image_url", "image_url": {"url": "data:x"}}]}]
     assert isinstance(router.for_model("local-general", hist)[0]["content"], str)
     assert router.for_model("local-vision", hist) is hist
+
+
+def test_leftover_files_in_legacy_folder_warn_without_traceback(env, monkeypatch, caplog):
+    # expected situation, not an error: the old data folder still holds other files
+    config = env["config"]
+    legacy = env["tmp"] / "project" / "data"
+    legacy.mkdir(parents=True)
+    (legacy / "chats.db").write_bytes(b"")
+    (legacy / "keep-me.txt").write_text("x")
+    monkeypatch.setattr(config, "LEGACY_DB", str(legacy / "chats.db"))
+    monkeypatch.setattr(config, "LEGACY_ENV", str(env["tmp"] / "none.env"))
+    with caplog.at_level("INFO", logger="hybridai"):
+        config.migrate_legacy()
+    recs = [r for r in caplog.records if "old data folder" in r.getMessage()]
+    assert recs and recs[0].levelname == "WARNING" and recs[0].exc_info is None

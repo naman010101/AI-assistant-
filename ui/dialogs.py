@@ -62,8 +62,8 @@ def ask(master, title, message, buttons, primary=None, detail=None):
     try:  # a grab before the window is on screen fails on some systems
         win.wait_visibility()
         win.grab_set()
-    except Exception:
-        log.exception("couldn't grab the dialog (it still works without the grab)")
+    except Exception as _exc:
+        log.warning("couldn't grab the dialog (it still works without the grab): %s", _exc)
     win.focus_force()
     master.wait_window(win)
     return result["key"]
