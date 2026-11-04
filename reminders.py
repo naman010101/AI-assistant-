@@ -13,12 +13,15 @@ local model with model_prompt() / parse_model_reply().
 """
 import datetime as dt
 import json
+import logging
 import os
 import re
 import sqlite3
 import threading
 import time
 import uuid
+
+log = logging.getLogger("hybridai")
 
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 DAY_ABBR = {d[:3]: i for i, d in enumerate(DAYS)} | {"tues": 1, "thur": 3, "thurs": 3}
@@ -411,7 +414,7 @@ def brief(rs, now=None, mem=None, project_changes=None):
             if opens:
                 parts.append("**Left open in recent sessions**\n" + "\n".join(opens[:6]))
         except Exception:
-            pass
+            log.exception("couldn't add open items from recent sessions to the brief")
     if project_changes:
         changed = [f"- {name}: {n} file{'s' if n != 1 else ''} changed since your last review"
                    for name, n in project_changes if n]

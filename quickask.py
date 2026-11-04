@@ -13,11 +13,14 @@ packages; without them, screen questions go to the vision model instead.
     text = ocr(img)              # str or None (+ reason in ocr.last_error)
 """
 import ctypes
+import logging
 import os
 import re
 import sys
 import threading
 import time
+
+log = logging.getLogger("hybridai")
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -170,7 +173,7 @@ class HotkeyListener:
                     try:
                         self.on_press()
                     except Exception:
-                        pass
+                        log.exception("Quick Ask hotkey handler failed")
         finally:
             user32.UnregisterHotKey(None, 1)
 
@@ -207,7 +210,7 @@ def _window_rect(hwnd):
         if dwm.DwmGetWindowAttribute(wintypes.HWND(hwnd), 9, ctypes.byref(rect), ctypes.sizeof(rect)) == 0:
             return (rect.left, rect.top, rect.right, rect.bottom)
     except Exception:
-        pass
+        log.exception("couldn't read the window's visible frame")
     if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         return (rect.left, rect.top, rect.right, rect.bottom)
     return None

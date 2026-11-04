@@ -15,7 +15,10 @@ past DIGEST_AT of the budget, so older messages are summarised instead of
 silently cut. Nothing here calls a model; app.py does that.
 """
 import json
+import logging
 import re
+
+log = logging.getLogger("hybridai")
 
 CHARS_PER_TOKEN = 3.5      # rough, safe for English and code
 IMAGE_TOKENS = 1000        # an attached image, roughly
@@ -141,5 +144,5 @@ def clean_digest(text):
             if lists and not isinstance(text, str):
                 text = "\n".join(f"- {x}" for x in lists[0])
     except ValueError:
-        pass
+        log.debug("digest reply wasn't JSON; keeping it as plain text", exc_info=True)
     return text[:4000]

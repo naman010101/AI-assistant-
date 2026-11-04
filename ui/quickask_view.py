@@ -5,6 +5,7 @@ off, an ask box with one-click actions, and streams the answer. You can copy
 the answer, put it in place of your selection, or move the chat into the
 main window to continue there.
 """
+import logging
 import queue
 import threading
 
@@ -13,6 +14,8 @@ import customtkinter as ctk
 import quickask
 
 from .theme import C, Fonts, model_label, where
+
+log = logging.getLogger("hybridai")
 
 
 class QuickAskPopup(ctk.CTkToplevel):
@@ -166,7 +169,7 @@ class QuickAskPopup(ctk.CTkToplevel):
                                        "meta": f"{model_label(ev[1])} · Quick Ask"})
                     self.entry.focus_set()
         except queue.Empty:
-            pass
+            log.debug("no more Quick Ask events this tick", exc_info=True)
         if toks:
             self._write("".join(toks))
         self.after(40, self._poll)

@@ -1,3 +1,4 @@
+import logging
 import re
 import os
 import time
@@ -259,6 +260,8 @@ def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
         full_response = answer
 
     except Exception as e:
+        logging.getLogger("hybridai").error(
+            "model stream failed (route=%s)", route_name, exc_info=True)
         if "cloud" in route_name and not (should_stop and should_stop()):
             notice = "[Cloud unavailable, falling back to local]\n\n"
             full_response = notice
@@ -273,6 +276,8 @@ def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
                 route_name = f"{fallback} (fallback)"
                 reason = f"{reason} → cloud error, fell back"
             except Exception as e2:
+                logging.getLogger("hybridai").error(
+                    "fallback stream failed", exc_info=True)
                 err = f"\n\nError: {str(e2)}"
                 full_response += err
                 if on_token:

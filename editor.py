@@ -17,12 +17,15 @@ import datetime as _dt
 import difflib
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import time
 
 import config
+
+log = logging.getLogger("hybridai")
 
 EDITABLE_KINDS = {"code", "text"}
 LOG_NAME = "edits.jsonl"
@@ -144,7 +147,7 @@ def checks(path, old, new, base_sha=None):
                                      "comparison is against the current file: lines shown as "
                                      "removed may be your newer edits."))
         except OSError:
-            pass
+            log.exception("couldn't read the file to compare it with the attached copy")
     old_lines, new_lines = len(old.splitlines()), len(new.splitlines())
     if PLACEHOLDER.search(new) and not PLACEHOLDER.search(old):
         out.append(("error", "The new version contains a placeholder like '... rest of the code'. "
@@ -280,7 +283,7 @@ def recent_edits(limit=10):
             try:
                 out.append(json.loads(line))
             except ValueError:
-                pass
+                log.exception("skipped a damaged line in the edits log")
     return list(reversed(out))[:limit]
 
 

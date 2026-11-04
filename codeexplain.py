@@ -18,11 +18,14 @@ import ast
 import difflib
 import hashlib
 import json
+import logging
 import os
 import re
 import time
 
 import config
+
+log = logging.getLogger("hybridai")
 
 SKIP_DIRS = {".git", ".hg", ".svn", "venv", ".venv", "env", "node_modules", "__pycache__", ".idea",
              ".vscode", "dist", "build", ".mypy_cache", ".pytest_cache", ".cache", "site-packages",
@@ -225,7 +228,7 @@ class Project:
             try:
                 snap[rel] = self.read(rel)
             except OSError:
-                pass
+                log.exception("couldn't read a file for the project snapshot")
         return snap
 
     def changes(self, blocked=None):

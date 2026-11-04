@@ -11,10 +11,13 @@ Two things are stored per conversation, on purpose:
   turns    what the chat window shows, including route and timing details
 """
 import json
+import logging
 import os
 import sqlite3
 import threading
 import time
+
+log = logging.getLogger("hybridai")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
@@ -47,7 +50,7 @@ def _turn_from_row(row):
         try:
             t.update(json.loads(row["extra"]))
         except ValueError:
-            pass
+            log.exception("couldn't parse the extra data of a saved message")
     return t
 
 

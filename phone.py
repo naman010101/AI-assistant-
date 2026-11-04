@@ -23,6 +23,7 @@ Only the Python standard library is used.
 import hashlib
 import hmac
 import json
+import logging
 import mimetypes
 import os
 import queue
@@ -42,6 +43,8 @@ import reminders
 import router
 import tools
 from storage import Store
+
+log = logging.getLogger("hybridai")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MOBILE_DIR = os.path.join(BASE_DIR, "mobile")
@@ -82,14 +85,14 @@ def local_ips():
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ips.add(info[4][0])
     except OSError:
-        pass
+        log.exception("couldn't look up this laptop's IP addresses")
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("10.255.255.255", 1))
         ips.add(s.getsockname()[0])
         s.close()
     except OSError:
-        pass
+        log.exception("couldn't find the LAN IP address")
     ips.discard("127.0.0.1")
     return sorted(ips, key=lambda ip: (not ip.startswith("100."), ip))  # Tailscale (100.x) first
 
@@ -423,7 +426,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 system, used = host.memory_system(text or " ".join(a.name for a in atts), model)
             except Exception:
-                pass
+                log.exception("couldn't build the memory context for a phone chat")
             events = queue.Queue()
             first = {"t": None}
 
