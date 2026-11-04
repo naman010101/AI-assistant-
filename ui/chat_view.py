@@ -4,7 +4,7 @@ import re
 
 import customtkinter as ctk
 
-from .theme import C, Fonts, model_label, where
+from .theme import C, Fonts, is_fallback, model_label, where
 
 
 class AutoText(ctk.CTkTextbox):
@@ -182,8 +182,8 @@ class AssistantMessage(ctk.CTkFrame):
     def set_done(self, route_name, meta_text, stopped=False):
         if stopped:
             self.pill.configure(text="  Stopped  ", fg_color=C["stop_bg"], text_color=C["stop_fg"])
-        elif "fallback" in route_name:
-            self.pill.configure(text="  Fallback  ", fg_color=C["accent_bg"], text_color=C["warn"])
+        elif is_fallback(route_name):
+            self.pill.configure(text="  Answered locally  ", fg_color=C["accent_bg"], text_color=C["warn"])
         else:
             local = where(route_name) == "Local"
             self.pill.configure(text=f"  {where(route_name)}  ",

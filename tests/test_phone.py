@@ -30,5 +30,6 @@ def test_unknown_command_lists_help():
 def test_titles_and_labels():
     import phone
     assert phone.new_title("  a   b ") == "a b" and len(phone.new_title("x" * 80)) == 34
-    assert phone.label("cloud-groq (fallback)") == "Groq · Llama 3.3 70B (fallback)"
+    assert phone.label("cloud-groq (fallback)") == "Groq · GPT-OSS 120B (fallback)"
+    assert phone.label("local-general (Answered locally: cloud unavailable)") == "Llama 3.1 8B (Answered locally: cloud unavailable)"
     assert phone.place("cloud-gemini") == "cloud" and phone.place("laptop") == "laptop"

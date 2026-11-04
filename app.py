@@ -702,9 +702,9 @@ class HybridAIApp(ctk.CTk):
     def _on_tokens(self, text, n):
         g = self.gen
         now = time.perf_counter()
-        # The router's "[Cloud unavailable…]" notice isn't model output, so it
+        # The router's "Answered locally: cloud unavailable" notice isn't model output, so it
         # mustn't count as the first token.
-        is_notice_only = text.startswith("[Cloud unavailable") and text.endswith("\n\n")
+        is_notice_only = router.is_fallback_notice(text) and text.endswith("\n\n")
         if g["first"] is None and not is_notice_only:
             g["first"] = now
             g["msg"].set_streaming(g["route"])
@@ -764,7 +764,7 @@ class HybridAIApp(ctk.CTk):
         self.inspector.set_route(model_label(route_name), reason)
         self.inspector.set_stats(f"{ttft:.1f} s" if ttft is not None else "—",
                                  f"{speed:.0f}" if speed else "—", f"{elapsed_ms / 1000:.1f} s")
-        if "fallback" in route_name:
+        if router.is_fallback(route_name):
             self.session["fallback"] += 1
             self.inspector.add_log(f"cloud failed → fell back to {route_name.split(' ')[0]}", "warn")
         self.session["local" if where(route_name) == "Local" else "cloud"] += 1

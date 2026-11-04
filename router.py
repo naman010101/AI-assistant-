@@ -5,6 +5,7 @@ import time
 import threading
 from openai import OpenAI
 import config
+import settings
 
 config.load_env()  # API keys live in the private data folder (see config.py)
 
@@ -25,17 +26,34 @@ groq_client = OpenAI(
 )
 
 # --- Models ---
+# Cloud model IDs live in settings.py (DEFAULTS["cloud_models"]); local ones here.
+_CLOUD_IDS = settings.cloud_models()
 MODELS = {
     "local-general": ("llama3.1:8b", local_client),
     "local-coder": ("qwen2.5-coder:7b", local_client),
     "local-vision": ("qwen2.5vl:7b", local_client),   # can see images
-    "cloud-gemini": ("gemini-2.0-flash", gemini_client),
-    "cloud-groq": ("llama-3.3-70b-versatile", groq_client),
+    "cloud-gemini": (_CLOUD_IDS["cloud-gemini"], gemini_client),
+    "cloud-groq": (_CLOUD_IDS["cloud-groq"], groq_client),
 }
 
 # Models that can read images. The others get text only.
 VISION_MODELS = {"local-vision", "cloud-gemini"}
 DEFAULT_MODEL = "local-general"
+
+# Shown to the user when a cloud model failed and a local one answered instead.
+FALLBACK_NOTICE = "Answered locally: cloud unavailable"
+_FALLBACK_SUFFIX = f" ({FALLBACK_NOTICE})"
+
+
+def is_fallback(route_name):
+    """True for a route name made by a cloud failure, e.g.
+    'local-general (Answered locally: cloud unavailable)'."""
+    return bool(route_name) and route_name.endswith(_FALLBACK_SUFFIX)
+
+
+def is_fallback_notice(text):
+    """True for the notice text streamed ahead of a fallback answer."""
+    return text.startswith(f"[{FALLBACK_NOTICE}]")
 
 # --- Classification (NOT USED by the app right now) ---
 #
@@ -263,7 +281,7 @@ def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
         logging.getLogger("hybridai").error(
             "model stream failed (route=%s)", route_name, exc_info=True)
         if "cloud" in route_name and not (should_stop and should_stop()):
-            notice = "[Cloud unavailable, falling back to local]\n\n"
+            notice = f"[{FALLBACK_NOTICE}]\n\n"
             full_response = notice
             if on_token:
                 on_token(notice)
@@ -273,7 +291,7 @@ def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
                                     prepare(fallback, messages, system, fit_args),
                                     on_token, should_stop)
                 full_response += answer
-                route_name = f"{fallback} (fallback)"
+                route_name = fallback + _FALLBACK_SUFFIX
                 reason = f"{reason} → cloud error, fell back"
             except Exception as e2:
                 logging.getLogger("hybridai").error(

@@ -26,6 +26,12 @@ def _default_folders():
 
 DEFAULTS = {
     "model": "local-general",      # chosen in the Run tab; never picked automatically
+    # Cloud model IDs, by the router's model key. Change them here when a
+    # provider retires a model; the router reads them when the app starts.
+    "cloud_models": {
+        "cloud-gemini": "gemini-3.8-flash",
+        "cloud-groq": "openai/gpt-oss-120b",
+    },
     "show_meta": True,
     "autoscroll": True,
     # How many tokens the local models can take in at once. Must match Ollama's
@@ -78,6 +84,19 @@ def _merge(base, over):
         else:
             out[k] = v
     return out
+
+
+def cloud_models(path=None):
+    """The cloud model IDs (settings.json over DEFAULTS), read-only: unlike
+    Settings(), this never writes the file. Used by router.py at import."""
+    try:
+        with open(path or config.SETTINGS_PATH, encoding="utf-8") as f:
+            over = json.load(f)
+    except (OSError, ValueError):
+        over = {}
+    if not isinstance(over, dict):
+        over = {}
+    return _merge(DEFAULTS, over)["cloud_models"]
 
 
 class Settings:

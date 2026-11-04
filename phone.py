@@ -53,7 +53,7 @@ UPLOAD_DIR = os.path.join(config.DATA_DIR, "phone_uploads")
 SHOTS_DIR = os.path.join(config.DATA_DIR, "phone_shots")
 MAX_UPLOAD = 25 * 1024 * 1024
 MODEL_NAMES = {"local-general": "Llama 3.1 8B", "local-coder": "Qwen Coder 7B", "local-vision": "Qwen 2.5 VL 7B",
-               "cloud-gemini": "Gemini 2.0 Flash", "cloud-groq": "Groq · Llama 3.3 70B", "laptop": "Laptop"}
+               "cloud-gemini": "Gemini 3.8 Flash", "cloud-groq": "Groq · GPT-OSS 120B", "laptop": "Laptop"}
 
 for ext, ctype in ((".js", "text/javascript"), (".css", "text/css"), (".webmanifest", "application/manifest+json"),
                    (".svg", "image/svg+xml"), (".png", "image/png"), (".json", "application/json")):
@@ -454,7 +454,7 @@ class Handler(BaseHTTPRequestHandler):
                     emit({"type": "ping"})  # keeps mobile networks from dropping the stream
                     continue
                 if ev[0] == "tok":
-                    if first["t"] is None and not ev[1].startswith("[Cloud unavailable"):
+                    if first["t"] is None and not router.is_fallback_notice(ev[1]):
                         first["t"] = time.time()
                     answer += ev[1]
                     emit({"type": "token", "text": ev[1]})
