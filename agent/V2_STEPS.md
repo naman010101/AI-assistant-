@@ -24,7 +24,7 @@ Ideas outside a step go to "Later ideas" at the end of this file.
 | 0.1 | You | `git push`, `git tag v1.0`, `git push --tags` | GitHub shows the latest commit and the tag |
 | 0.2 | builder (Sonnet) | Add `log_setup.py`: one logger writing to `%LOCALAPPDATA%\HybridAI\logs\app.log`, rotating at 1 MB, 5 files kept. Call it once at start-up in `app.py` | Stopping Ollama mid-reply writes an error line to `app.log` |
 | 0.3 | mechanic (Haiku) | Replace every `except ...: pass` with `log.exception(...)`, behaviour otherwise unchanged | No `except` followed by a bare `pass` remains |
-| 0.4 | mechanic (Haiku) | Add `pyproject.toml` with the dependencies from `requirements.txt` and a basic `ruff` config. Don't fix lint warnings yet | `ruff check .` runs and prints a count |
+| 0.4 | mechanic (Haiku) | Add `pyproject.toml` with the dependencies from `requirements.txt` pinned (`==`) to the versions in the venv, a `[build-system]` section (setuptools, no packages: this is an app) and a basic `ruff` config. Don't fix lint warnings yet. `requirements.txt` stays unpinned for now | `ruff check .` runs and prints a count; `pip wheel . --no-deps` builds |
 | 0.5 | builder (Sonnet) | Add `.github/workflows/tests.yml` running `pytest` on `windows-latest` for each push | The Actions tab shows a green run |
 | 0.6 | mechanic (Haiku) | Run `pytest` with coverage; write the pass count and per-module coverage to `agent/LOG.md` as the v2 baseline | `agent/LOG.md` has today's numbers |
 | 0.7 | You, then mechanic | Decide to finish or drop Phase 8, then update `README.md` and `agent/PLAN.md` to match | The docs mention no missing files |

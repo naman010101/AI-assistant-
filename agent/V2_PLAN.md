@@ -44,8 +44,8 @@ Before changing anything, make sure every change can be seen, tested and undone.
 2. Add logging: one `logging` setup writing to `%LOCALAPPDATA%\HybridAI\logs\app.log`, rotating
    at about 1 MB with 5 old files kept. Replace the 10 `except: pass` blocks with
    `log.exception(...)`. The other 62 broad excepts are handled as each file is touched.
-3. Add `pyproject.toml` listing the dependencies with versions, next to `requirements.txt`,
-   and a `ruff` setting for basic linting.
+3. Add `pyproject.toml` listing the dependencies pinned to the versions in the venv (with a
+   `[build-system]` section), next to the unpinned `requirements.txt`, and a `ruff` setting for basic linting.
 4. Add CI: a GitHub Actions workflow running `pytest` on `windows-latest` for every push.
 5. Record the baseline: 61 tests pass, 1 skipped. Write that and per-module coverage into
    `agent/LOG.md`.
