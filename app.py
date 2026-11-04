@@ -38,6 +38,7 @@ log = logging.getLogger("hybridai")
 try:
     MIGRATION_NOTES = config.migrate_legacy()
 except Exception as _e:  # never stop the app over this; report it in the log
+    log.exception("couldn't move old data out of the project folder")
     MIGRATION_NOTES = [f"could not move old data: {_e}"]
 
 import attachments  # noqa: E402
