@@ -44,6 +44,9 @@ DEFAULTS = {
     # When a message with files or images goes to a cloud model:
     # "ask" = confirm each time, "block" = never, "allow" = send.
     "cloud_files": "ask",
+    # Replace emails, keys, tokens, secret values and file paths with placeholders
+    # before text goes to a cloud model (privacy.py). Images can't be masked.
+    "privacy_filter": True,
     "memory": {
         "enabled": True,           # search past-session summaries for context
         "cloud": False,            # also send that context to cloud models

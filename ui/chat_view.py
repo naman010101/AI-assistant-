@@ -4,6 +4,7 @@ import re
 
 import customtkinter as ctk
 
+import privacy
 from .theme import C, Fonts, is_fallback, model_label, where
 
 
@@ -209,6 +210,36 @@ class AssistantMessage(ctk.CTkFrame):
                           hover_color=C["raised"], text_color=C["accent_hi"], border_width=1,
                           border_color=C["accent_border"],
                           command=lambda sid=m["id"]: on_open(sid)).pack(side="left", padx=(6, 0))
+
+    def set_masked(self, report):
+        """What the privacy filter replaced before this message went to the cloud.
+        `report` has counts (and, for a live reply, items with short previews)."""
+        text = privacy.describe(report)
+        if not text:
+            return
+        box = ctk.CTkFrame(self._col, fg_color="transparent")
+        box.grid(row=4, column=0, sticky="w", pady=(6, 0))
+        ctk.CTkLabel(box, text=f"◈ Masked before sending: {text}", font=Fonts.ui(12),
+                     text_color=C["faint"]).grid(row=0, column=0, sticky="w")
+        items = report.get("items") or []
+        if not items:
+            return
+        detail = ctk.CTkLabel(box, text="\n".join(f"{i['ph']}  {i['preview']}" for i in items),
+                              font=Fonts.mono(11), text_color=C["muted"], justify="left", anchor="w")
+        state = {"open": False}
+
+        def toggle():
+            state["open"] = not state["open"]
+            if state["open"]:
+                detail.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            else:
+                detail.grid_forget()
+            btn.configure(text="Hide" if state["open"] else "Details")
+
+        btn = ctk.CTkButton(box, text="Details", height=24, width=60, corner_radius=6, font=Fonts.ui(12),
+                            fg_color="transparent", hover_color=C["raised"], text_color=C["accent_hi"],
+                            command=toggle)
+        btn.grid(row=0, column=1, padx=(8, 0))
 
     def set_edits(self, edits, on_review, on_undo):
         """One row per proposed file change. on_review(i) / on_undo(i)."""

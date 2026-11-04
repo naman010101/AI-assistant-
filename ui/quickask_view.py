@@ -144,7 +144,8 @@ class QuickAskPopup(ctk.CTkToplevel):
                         on_token=lambda t: ev.put(("tok", t)),
                         on_done=lambda route: ev.put(("done", route)),
                         should_stop=self.stop_flag.is_set,
-                        on_model=lambda m: ev.put(("model", m)))
+                        on_model=lambda m: ev.put(("model", m)),
+                        on_notice=lambda t: ev.put(("notice", t)))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -159,6 +160,8 @@ class QuickAskPopup(ctk.CTkToplevel):
                     toks.append(ev[1])
                 elif ev[0] == "model":
                     self.model_lbl.configure(text=f"{model_label(ev[1])} · {where(ev[1]).lower()}")
+                elif ev[0] == "notice":
+                    self.model_lbl.configure(text=f"{self.model_lbl.cget('text').split('  ·  ')[0]}  ·  {ev[1]}")
                 elif ev[0] == "done":
                     if toks:
                         self._write("".join(toks))

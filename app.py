@@ -45,6 +45,7 @@ import attachments  # noqa: E402
 import context  # noqa: E402
 import editor  # noqa: E402
 import memory  # noqa: E402
+import privacy  # noqa: E402
 import quickask  # noqa: E402
 import router  # noqa: E402
 import access  # noqa: E402
@@ -331,6 +332,8 @@ class HybridAIApp(ctk.CTk):
                         self._show_edits(conv, i, msg)
                     if t.get("memory"):
                         msg.set_memory(t["memory"], self.open_memory)
+                    if t.get("masked"):
+                        msg.set_masked(t["masked"])
             self.after(120, self.chat.go_bottom)  # after every message has its final height
         self._update_header()
 
@@ -499,7 +502,9 @@ class HybridAIApp(ctk.CTk):
                 choice = dialogs.ask(
                     self, f"Send files to {provider}?",
                     f"{model_label(model)} is a cloud model. The contents of these attachments will "
-                    f"leave this laptop:", [("send", "Send"), ("cancel", "Cancel")],
+                    f"leave this laptop."
+                    + (" Emails, keys and paths in the text are masked first. Images are sent as they are."
+                       if self.settings.get("privacy_filter", True) else ""), [("send", "Send"), ("cancel", "Cancel")],
                     primary="cancel", detail=names)
                 if choice != "send":
                     return None
@@ -577,6 +582,9 @@ class HybridAIApp(ctk.CTk):
 
         fit_args = {"budget": int(self.settings.get("context_tokens", 8192)),
                     "digest": conv.meta.get("digest"), "digest_upto": conv.meta.get("digest_upto", 0)}
+        mask_cloud = bool(self.settings.get("privacy_filter", True))
+        if not mask_cloud and where(model) == "Cloud":
+            self.inspector.add_log("privacy filter is off: this message goes to the cloud unmasked", "warn")
 
         def on_context(info):
             if info["dropped"] or info["digest_used"]:
@@ -605,7 +613,8 @@ class HybridAIApp(ctk.CTk):
                             on_route=lambda r, why: q.put((gen_id, "route", r, why)),
                             model_override=model, should_stop=stop_event.is_set,
                             content=content, system=sys_text, fit_args=fit_args,
-                            on_context=on_context)
+                            on_context=on_context, mask_cloud=mask_cloud,
+                            on_masked=lambda r: q.put((gen_id, "masked", r)))
             except Exception as e:  # anything stream_chat didn't catch itself
                 log.exception("error before the model stream started")
                 q.put((gen_id, "tok", f"\n\nError: {e}"))
@@ -653,6 +662,8 @@ class HybridAIApp(ctk.CTk):
                         routed = ev[2:]
                     elif ev[1] == "memory":
                         self.gen["memory"] = ev[2]
+                    elif ev[1] == "masked":
+                        self.gen["masked"] = ev[2]
                     else:
                         done = ev[2:]
                 # events from an older generation are ignored
@@ -747,6 +758,10 @@ class HybridAIApp(ctk.CTk):
         if g.get("memory"):
             turn["memory"] = g["memory"]
             g["msg"].set_memory(g["memory"], self.open_memory)
+        if g.get("masked"):
+            turn["masked"] = {k: v for k, v in g["masked"].items() if k != "items"}  # counts only
+            g["msg"].set_masked(g["masked"])
+            self.inspector.add_log("masked before sending: " + privacy.describe(g["masked"]), "cloud")
         conv.turns.append(turn)
         if turn.get("edits"):
             self._show_edits(conv, len(conv.turns) - 1, g["msg"])
@@ -1313,7 +1328,7 @@ class HybridAIApp(ctk.CTk):
             on_open_in_app=self.import_quick_chat, on_replace=self._replace_selection)
 
     def quick_ask_worker(self, ctx, history, question, action, use_screen, use_sel,
-                         on_token, on_done, should_stop, on_model):
+                         on_token, on_done, should_stop, on_model, on_notice=None):
         """One Quick Ask answer (worker thread). Captured content (screen,
         selection) goes to a local model unless 'Files and the cloud' is set
         to Always send."""
@@ -1357,11 +1372,19 @@ class HybridAIApp(ctk.CTk):
             except Exception:
                 system = None
         on_model(model)
+
+        def on_masked(report):
+            text = "masked before sending: " + privacy.describe(report)  # counts only, never values
+            self.events.put(("log", "Quick Ask: " + text))
+            if on_notice:
+                on_notice(text.capitalize())
+
         try:
             stream_chat(history, question or action or "Explain this", "manual", on_token=on_token,
                         on_done=lambda r, why, ms: on_done(r), model_override=model,
                         should_stop=should_stop, content=content, system=system,
-                        fit_args={"budget": int(self.settings.get("context_tokens", 8192))})
+                        fit_args={"budget": int(self.settings.get("context_tokens", 8192))},
+                        mask_cloud=bool(self.settings.get("privacy_filter", True)), on_masked=on_masked)
         except Exception as e:
             on_token(f"\n\nError: {e}")
             on_done(model)

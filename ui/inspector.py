@@ -368,6 +368,9 @@ class Inspector(ctk.CTkFrame):
             seg.grid(row=row_next(), column=0, sticky="ew", padx=12, pady=(6, 0))
             seg.set({"ask": "Ask each time", "block": "Never send", "allow": "Always send"}
                     .get(st.get("cloud_files", "ask"), "Ask each time"))
+            switch("Mask private data", "Emails, keys, passwords and file paths in the text are replaced "
+                   "before it goes to a cloud model. Images can't be masked.",
+                   lambda: st.get("privacy_filter", True), lambda v: on_setting("privacy_filter", v))
 
             label("Context size")
             note("How much text the local models can take in at once. Must match Ollama's "

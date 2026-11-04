@@ -41,6 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import attachments
 import config
+import privacy
 import reminders
 import router
 import tools
@@ -463,6 +464,8 @@ class Handler(BaseHTTPRequestHandler):
                         on_route=lambda r, why: events.put(("route", r)),
                         on_done=lambda r, why, ms: events.put(("done", r, ms)),
                         model_override=model, should_stop=gone.is_set, content=content, system=system,
+                        mask_cloud=bool(st.get("privacy_filter", True)),
+                        on_masked=lambda r: events.put(("masked", r)),
                         fit_args={"budget": int(st.get("context_tokens", 8192)),
                                   "digest": (conv.get("meta") or {}).get("digest"),
                                   "digest_upto": (conv.get("meta") or {}).get("digest_upto", 0)})
@@ -485,6 +488,8 @@ class Handler(BaseHTTPRequestHandler):
                     emit({"type": "token", "text": ev[1]})
                 elif ev[0] == "route":
                     emit({"type": "route", "model": ev[1], "label": label(ev[1]), "where": place(ev[1])})
+                elif ev[0] == "masked":
+                    emit({"type": "notice", "text": "Masked before sending: " + privacy.describe(ev[1])})
                 else:
                     route_name, elapsed = ev[1], ev[2]
                     break
