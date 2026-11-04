@@ -24,8 +24,9 @@ Ideas outside a step go to "Later ideas" at the end of this file.
 | 0.1 | You | `git push`, `git tag v1.0`, `git push --tags` | GitHub shows the latest commit and the tag |
 | 0.2 | builder (Sonnet) | Add `log_setup.py`: one logger writing to `%LOCALAPPDATA%\HybridAI\logs\app.log`, rotating at 1 MB, 5 files kept. Call it once at start-up in `app.py` | Stopping Ollama mid-reply writes an error line to `app.log` |
 | 0.3 | mechanic (Haiku) | Replace every `except ...: pass` with `log.exception(...)`, behaviour otherwise unchanged | No `except` followed by a bare `pass` remains |
-| 0.4 | mechanic (Haiku) | Add `pyproject.toml` with the dependencies from `requirements.txt` and a basic `ruff` config. Don't fix lint warnings yet | `ruff check .` runs and prints a count |
+| 0.4 | mechanic (Haiku) | Add `pyproject.toml` with the dependencies from `requirements.txt` pinned (`==`) to the versions in the venv, a `[build-system]` section (setuptools, no packages: this is an app) and a basic `ruff` config. Don't fix lint warnings yet. `requirements.txt` stays unpinned for now | `ruff check .` runs and prints a count; `pip wheel . --no-deps` builds |
 | 0.5 | builder (Sonnet) | Add `.github/workflows/tests.yml` running `pytest` on `windows-latest` for each push | The Actions tab shows a green run |
+| 0.5b | builder (Sonnet) | Fix the two failing tests. `test_pdf`: skip with a reason when `reportlab` isn't importable (don't add the dependency). `test_migration_moves_chats_and_env`: the test held `chats.db` open and Windows can't move an open file; it now snapshots the db and `-wal`, closes the connection, then migrates (real code unchanged) | `pytest` shows no failures; the skip reason is printed |
 | 0.6 | mechanic (Haiku) | Run `pytest` with coverage; write the pass count and per-module coverage to `agent/LOG.md` as the v2 baseline | `agent/LOG.md` has today's numbers |
 | 0.7 | You, then mechanic | Decide to finish or drop Phase 8, then update `README.md` and `agent/PLAN.md` to match | The docs mention no missing files |
 | 0.8 | reviewer (Opus) | End-of-phase review | Every Phase 0 "Done when" item passes |
@@ -43,6 +44,7 @@ Back up `%LOCALAPPDATA%\HybridAI` before step 1.5.
 | 1.5 | architect -> builder | Chat storage: save new messages as rows instead of rewriting whole chats, add an index, migrate old chats. Back up `chats.db` first | All old chats open; opening one takes under 50 ms |
 | 1.6 | architect -> builder | Vector store: memory embeddings into `sqlite-vec` behind a small `vectors.py` that Phase 3 reuses; `numpy` fallback. Ask before installing `sqlite-vec` | Same search results, under 50 ms |
 | 1.7 | builder (Sonnet) | Tests for cloud fallback, phone login, expired links, path traversal | Router and phone coverage each above 70% |
+| 1.9 | architect -> builder | Single running copy: stop a second copy of the app from starting; `migrate_legacy` shows a clear message instead of crashing on `PermissionError`. (Run the 1.8 review after this step.) | Starting the app twice shows a message and the second copy exits; migrating while another process holds `chats.db` shows a message, not a traceback |
 | 1.8 | reviewer (Opus) | End-of-phase review | Every Phase 1 "Done when" item passes |
 
 ## Phase 2 — Memory controls (branch v2/phase-2-memory)
@@ -120,3 +122,5 @@ wrong, ideally with a screenshot.
 ## Later ideas
 
 (Add ideas that come up during a step here instead of doing them.)
+
+- Internship kit (old Phase 8): skills coverage vs a job description, resume tailoring, cover letter and interview prompts, application tracker. Dropped from v2 on 2026-11-04; its files were never in the repo.

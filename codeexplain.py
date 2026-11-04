@@ -227,8 +227,8 @@ class Project:
         for rel in self.files(blocked):
             try:
                 snap[rel] = self.read(rel)
-            except OSError:
-                log.exception("couldn't read a file for the project snapshot")
+            except OSError as _exc:
+                log.warning("couldn't read a file for the project snapshot: %s", _exc)
         return snap
 
     def changes(self, blocked=None):

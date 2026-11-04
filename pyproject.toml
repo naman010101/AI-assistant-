@@ -1,16 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Hybrid AI is an app run from this folder (python app.py), not an importable
+# package: list no packages so setuptools does not try to auto-discover them.
+packages = []
+
 [project]
 name = "hybrid-ai"
 version = "2.0.0.dev0"
 requires-python = ">=3.11"
 dependencies = [
-    "customtkinter",
-    "openai",
-    "python-dotenv",
-    "pillow",
-    "pypdf",
-    "python-docx",
-    "openpyxl",
-    "pytest",
+    "customtkinter==6.0.0",
+    "openai==3.39.0",
+    "python-dotenv==1.2.4",
+    "pillow==13.0.0",
+    "pypdf==6.21.4",
+    "python-docx==1.2.0",
+    "openpyxl==3.1.5",
+    "pytest==9.2.0",
 ]
 
 [tool.ruff]

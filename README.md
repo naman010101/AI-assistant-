@@ -147,8 +147,7 @@ venv\Scripts\python -m pip install winrt-runtime winrt-Windows.Media.Ocr winrt-W
 - [x] Code explainer for AI-written code
 - [x] Quick Ask popup with screen and selected-text context
 - [x] Android companion app
-- [ ] Reminders and daily brief
-- [ ] Internship kit
+- [x] Reminders and daily brief
 
 ## For AI agents
 

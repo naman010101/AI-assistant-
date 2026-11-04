@@ -18,7 +18,7 @@
   the app's own data folder, Windows, Program Files, ProgramData, AppData.
 - Tk is main-thread only: worker threads put results on a queue; `_poll()` in `app.py` applies them. Never read a Tk var from a thread.
 - Every model gets the same fitted context (`context.fit`), so switching models does not change what the chat "knows".
-- Rewrites of resumes must come from text that is really in the resume (`internship.parse_tailor` drops others).
+- Phase 8 (internship kit) was dropped from v2 on 2026-11-04 and parked under Later ideas in `agent/V2_STEPS.md`; its files were never in the repo.
 - Reminder/brief times are local time. Phone token and file links are signed; never log the token.
 - No automatic cloud routing; never send private content to the cloud without the confirm step.
 

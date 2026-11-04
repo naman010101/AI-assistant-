@@ -13,9 +13,19 @@ import config  # noqa: E402
 import log_setup  # noqa: E402
 
 
-@pytest.fixture
-def logger(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def private_data(tmp_path, monkeypatch):
+    """Point every data path at a temp folder so nothing here can read the real
+    .env in the real private data folder (router.py calls config.load_env() on import)."""
+    monkeypatch.setenv("HYBRID_AI_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setattr(config, "LEGACY_ENV", str(tmp_path / "legacy.env"))
+    return tmp_path
+
+
+@pytest.fixture
+def logger(private_data):
     lg = logging.getLogger("hybridai")
     saved = list(lg.handlers)
     lg.handlers = []
@@ -65,3 +75,26 @@ def test_stream_failure_is_logged(logger, tmp_path, monkeypatch):
     router.stream_chat([], "hi", mode="local-general")
     text = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")
     assert "model stream failed" in text and "ollama stopped mid-reply" in text
+
+
+def test_setup_safe_survives_a_logging_failure(monkeypatch, capsys):
+    import log_setup
+
+    def boom():
+        raise PermissionError("logs folder is locked")
+
+    monkeypatch.setattr(log_setup, "setup", boom)
+    assert log_setup.setup_safe() is None  # no exception escapes
+    assert "file logging is off" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, logging.INFO), ("DEBUG", logging.DEBUG), ("debug", logging.DEBUG),
+    ("WARNING", logging.WARNING), ("nonsense", logging.INFO), ("", logging.INFO),
+])
+def test_log_level_from_environment(logger, monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv(log_setup.LEVEL_ENV, raising=False)
+    else:
+        monkeypatch.setenv(log_setup.LEVEL_ENV, value)
+    assert log_setup.setup().level == expected

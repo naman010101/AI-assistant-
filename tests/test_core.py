@@ -199,14 +199,22 @@ def test_binary_and_unsupported(tmp_path):
 
 
 def test_pdf(tmp_path):
-    pytest.importorskip("reportlab", reason="reportlab is only used to build this test PDF and is not in requirements.txt")
-    from reportlab.pdfgen import canvas
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
     p = tmp_path / "notes.pdf"
-    c = canvas.Canvas(str(p))
-    c.drawString(72, 720, "Dynamic programming notes page one")
-    c.showPage()
-    c.drawString(72, 720, "Second page about memoization")
-    c.save()
+    w = PdfWriter()
+    font = w._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica")}))
+    for line in ("Dynamic programming notes page one", "Second page about memoization"):
+        page = w.add_blank_page(width=612, height=792)
+        stream = DecodedStreamObject()
+        stream.set_data(f"BT /F1 12 Tf 72 720 Td ({line}) Tj ET".encode())
+        page[NameObject("/Contents")] = w._add_object(stream)
+        page[NameObject("/Resources")] = DictionaryObject({
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
+    with open(p, "wb") as f:
+        w.write(f)
     a = A.load_file(str(p))
     assert a.kind == "pdf" and a.detail == "2 pages"
     assert "page 1" in a.text and "memoization" in a.text
@@ -334,3 +342,18 @@ def test_router_manual_and_text_only(monkeypatch):
                                          {"type": "image_url", "image_url": {"url": "data:x"}}]}]
     assert isinstance(router.for_model("local-general", hist)[0]["content"], str)
     assert router.for_model("local-vision", hist) is hist
+
+
+def test_leftover_files_in_legacy_folder_warn_without_traceback(env, monkeypatch, caplog):
+    # expected situation, not an error: the old data folder still holds other files
+    config = env["config"]
+    legacy = env["tmp"] / "project" / "data"
+    legacy.mkdir(parents=True)
+    (legacy / "chats.db").write_bytes(b"")
+    (legacy / "keep-me.txt").write_text("x")
+    monkeypatch.setattr(config, "LEGACY_DB", str(legacy / "chats.db"))
+    monkeypatch.setattr(config, "LEGACY_ENV", str(env["tmp"] / "none.env"))
+    with caplog.at_level("INFO", logger="hybridai"):
+        config.migrate_legacy()
+    recs = [r for r in caplog.records if "old data folder" in r.getMessage()]
+    assert recs and recs[0].levelname == "WARNING" and recs[0].exc_info is None

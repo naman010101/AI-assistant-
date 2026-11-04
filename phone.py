@@ -84,15 +84,15 @@ def local_ips():
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ips.add(info[4][0])
-    except OSError:
-        log.exception("couldn't look up this laptop's IP addresses")
+    except OSError as _exc:
+        log.warning("couldn't look up this laptop's IP addresses: %s", _exc)
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("10.255.255.255", 1))
         ips.add(s.getsockname()[0])
         s.close()
-    except OSError:
-        log.exception("couldn't find the LAN IP address")
+    except OSError as _exc:
+        log.warning("couldn't find the LAN IP address: %s", _exc)
     ips.discard("127.0.0.1")
     return sorted(ips, key=lambda ip: (not ip.startswith("100."), ip))  # Tailscale (100.x) first
 

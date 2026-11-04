@@ -6,9 +6,15 @@ Needs Ollama running with: `llama3.1:8b`, `qwen2.5-coder:7b`, `qwen2.5vl:7b`, `n
 Keys (optional) in `%LOCALAPPDATA%\HybridAI\.env`: Gemini, Groq.
 Install: `venv\Scripts\python -m pip install -r requirements.txt --timeout 120 --retries 10`
 
+## Logs
+App log: `%LOCALAPPDATA%\HybridAI\logspp.log` (rotates at 1 MB, 5 old files kept).
+Level: set the environment variable `HYBRIDAI_LOG_LEVEL` to `DEBUG`, `INFO` (default), `WARNING` or `ERROR`
+before starting the app, e.g. `set HYBRIDAI_LOG_LEVEL=DEBUG` then `launch.bat`. Unknown values mean INFO.
+DEBUG also writes the per-tick lines that INFO hides.
+
 ## Tests
 `python -m pytest tests -q` → expected 66 passed, 1 skipped (Tk-free; widgets are stubbed).
-Files: test_core, test_editor, test_memory, test_context, test_codeexplain, test_quickask, test_phone, test_reminders, test_internship.
+Files: test_core, test_editor, test_memory, test_context, test_codeexplain, test_quickask, test_phone, test_reminders, test_log_setup, test_no_silent_except.
 `python eval_memory.py` and `memory_check.py` need Ollama running.
 
 ## Cloud workspace (the agent's machine)
@@ -22,7 +28,7 @@ Files: test_core, test_editor, test_memory, test_context, test_codeexplain, test
 2. `device_commit_files` with `devicePath` under `~/mnt/Local_ai_model/hybrid-ai/...` (use `force` only if the owner edited it).
 3. On the laptop: parse-check (`python -m py_compile`), run tests, then `git add -A` and `git commit`.
 4. Do not delete files on the laptop without `device_request_delete_permission`. Leftover `.git/*.lock` files are safe to remove after asking.
-5. Tell the owner to run `git push` (commits so far: Phases 0–7 are committed; Phase 8 is not).
+5. Tell the owner to run `git push` (commits so far: Phases 0–7).
 
 ## Commit message style
 `Phase N: short description` (see `git log`). End with the attribution lines the session asks for.

@@ -282,8 +282,8 @@ def recent_edits(limit=10):
         for line in f:
             try:
                 out.append(json.loads(line))
-            except ValueError:
-                log.exception("skipped a damaged line in the edits log")
+            except ValueError as _exc:
+                log.warning("skipped a damaged line in the edits log: %s", _exc)
     return list(reversed(out))[:limit]
 
 

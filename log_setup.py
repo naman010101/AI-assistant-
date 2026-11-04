@@ -6,6 +6,7 @@ modules just use logging.getLogger("hybridai").
 import logging
 import logging.handlers
 import os
+import sys
 
 import config
 
@@ -19,10 +20,20 @@ def log_path():
     return os.path.join(config.DATA_DIR, "logs", "app.log")
 
 
+LEVEL_ENV = "HYBRIDAI_LOG_LEVEL"
+_LEVELS = {"DEBUG": logging.DEBUG, "INFO": logging.INFO,
+           "WARNING": logging.WARNING, "ERROR": logging.ERROR}
+
+
+def log_level():
+    """Level from HYBRIDAI_LOG_LEVEL (DEBUG, INFO, WARNING, ERROR); INFO if unset or unknown."""
+    return _LEVELS.get(os.environ.get(LEVEL_ENV, "").strip().upper(), logging.INFO)
+
+
 def setup():
     """Attach the rotating file handler (once) and return the logger."""
     logger = logging.getLogger(LOGGER_NAME)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(log_level())
     if any(getattr(h, _TAG, False) for h in logger.handlers):
         return logger
     path = log_path()
@@ -34,3 +45,15 @@ def setup():
     setattr(handler, _TAG, True)
     logger.addHandler(handler)
     return logger
+
+
+def setup_safe():
+    """setup(), but a logging problem (read-only folder, antivirus or OneDrive
+    lock...) must never stop the app from starting: print one warning and carry
+    on without file logging. Returns the logger, or None if it couldn't be set up."""
+    try:
+        return setup()
+    except Exception as e:  # noqa: BLE001 - this is the whole point
+        # print() does nothing if there is no console (pythonw), so no guard needed
+        print(f"Hybrid AI: file logging is off ({type(e).__name__}: {e})", file=sys.stderr)
+        return None
