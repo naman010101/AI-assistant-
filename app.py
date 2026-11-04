@@ -591,6 +591,7 @@ class HybridAIApp(ctk.CTk):
                 try:
                     content = build()
                 except Exception as e:
+                    log.exception("couldn't prepare the message for the model")
                     q.put((gen_id, "tok", f"Couldn't prepare this: {type(e).__name__}: {e}"))
                     q.put((gen_id, "done", model, "preparation failed", 0))
                     return
@@ -606,6 +607,7 @@ class HybridAIApp(ctk.CTk):
                             content=content, system=sys_text, fit_args=fit_args,
                             on_context=on_context)
             except Exception as e:  # anything stream_chat didn't catch itself
+                log.exception("error before the model stream started")
                 q.put((gen_id, "tok", f"\n\nError: {e}"))
                 q.put((gen_id, "done", "local-general", "error before streaming", 0))
 
