@@ -8,6 +8,7 @@ import importlib
 import io
 import json
 import os
+import shutil
 import sqlite3
 import sys
 
@@ -44,17 +45,25 @@ def test_migration_moves_chats_and_env(env, monkeypatch):
     proj = env["tmp"] / "project"
     (proj / "data").mkdir(parents=True)
     legacy_db = proj / "data" / "chats.db"
-    con = sqlite3.connect(legacy_db)
+    live_db = env["tmp"] / "live" / "chats.db"  # the "running app" copy; never moved
+    live_db.parent.mkdir()
+    con = sqlite3.connect(live_db)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("CREATE TABLE t (x)")
     con.execute("INSERT INTO t VALUES (42)")
-    con.commit()  # leave it open: the row may still be only in the -wal file
+    con.commit()
+    # Snapshot the files while the connection is open, as a crash would leave
+    # them: the row is then only in the -wal file. Then close the connection:
+    # Windows cannot move a file that is still open, and the real start-up
+    # (app.py) runs migrate_legacy before anything opens the database.
+    for suffix in ("", "-wal"):
+        shutil.copy(str(live_db) + suffix, str(legacy_db) + suffix)
+    con.close()
     (proj / ".env").write_text("GEMINI_API_KEY=abc\n")
     monkeypatch.setattr(config, "LEGACY_DB", str(legacy_db))
     monkeypatch.setattr(config, "LEGACY_ENV", str(proj / ".env"))
 
     notes = config.migrate_legacy()
-    con.close()
     assert any("moved your chats" in n for n in notes)
     assert any("API keys" in n for n in notes)
     assert not legacy_db.exists() and not (proj / ".env").exists()
@@ -190,6 +199,7 @@ def test_binary_and_unsupported(tmp_path):
 
 
 def test_pdf(tmp_path):
+    pytest.importorskip("reportlab", reason="reportlab is only used to build this test PDF and is not in requirements.txt")
     from reportlab.pdfgen import canvas
     p = tmp_path / "notes.pdf"
     c = canvas.Canvas(str(p))
