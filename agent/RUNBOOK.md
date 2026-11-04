@@ -17,6 +17,9 @@ DEBUG also writes the per-tick lines that INFO hides.
 Files: test_core, test_editor, test_memory, test_context, test_codeexplain, test_quickask, test_phone, test_reminders, test_log_setup, test_no_silent_except.
 `python eval_memory.py` and `memory_check.py` need Ollama running.
 
+## Start-up switches (tests only)
+`HYBRIDAI_NO_DIALOGS=1` makes `startup.py` print its messages ("already running", migration stopped) to stderr instead of opening a message box, and skips focusing the other window. Used by `tests/test_startup.py`; always set it, with `HYBRID_AI_DATA_DIR` pointing at a temp folder, when running `app.py` from a test or CI. Do not set it for normal use.
+
 ## Cloud workspace (the agent's machine)
 - Linux container; no tkinter / PyPI by default. Project copy at `/home/claude/t`.
 - GUI test env: uv python 3.13 + CustomTkinter cloned from GitHub (`/tmp/claude-0/tkpy`) + xvfb. May need rebuilding.

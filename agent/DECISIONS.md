@@ -21,6 +21,7 @@
 - Phase 8 (internship kit) was dropped from v2 on 2026-11-04 and parked under Later ideas in `agent/V2_STEPS.md`; its files were never in the repo.
 - Reminder/brief times are local time. Phone token and file links are signed; never log the token.
 - No automatic cloud routing; never send private content to the cloud without the confirm step.
+- Migration backups (1.9): before moving old chats/.env out of the project folder, the raw files are copied to `%LOCALAPPDATA%\HybridAI\backups\migration-<timestamp>\` and the move is refused if that backup fails. The backup is a second copy of the chats, kept in the private folder; clean-up is a later step. Only one app copy runs per data folder (named `Local\` mutex); Cancel on a stopped migration exits the app.
 
 ## Capabilities note (to build)
 The system prompt should say, in plain words: the app can read files the user attaches or pastes a path for, edit them

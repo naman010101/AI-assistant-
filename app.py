@@ -24,10 +24,17 @@ import time
 import urllib.request
 import uuid
 
-import customtkinter as ctk
-
 import config
-import log_setup
+
+if __name__ == "__main__":
+    # Before Tk loads, any folder is created or any database opened: a second
+    # copy shows a message, focuses the first window and exits.
+    import startup
+    startup.ensure_single_copy()
+
+import customtkinter as ctk  # noqa: E402
+
+import log_setup  # noqa: E402
 
 log_setup.setup_safe()
 
@@ -36,7 +43,8 @@ log = logging.getLogger("hybridai")
 # Move data that older versions kept in the project folder BEFORE anything
 # reads it (router.py loads the API keys on import).
 try:
-    MIGRATION_NOTES = config.migrate_legacy()
+    import startup
+    MIGRATION_NOTES = startup.migrate_or_exit()
 except Exception as _e:  # never stop the app over this; report it in the log
     log.exception("couldn't move old data out of the project folder")
     MIGRATION_NOTES = [f"could not move old data: {_e}"]
@@ -101,7 +109,7 @@ class HybridAIApp(ctk.CTk):
         super().__init__(fg_color=C["bg"])
         Fonts.init()
 
-        self.title("Hybrid AI Assistant")
+        self.title(config.WINDOW_TITLE)
         self.geometry("1320x820")
         self.minsize(980, 620)
         try:
