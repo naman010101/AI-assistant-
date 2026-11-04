@@ -1,0 +1,22 @@
+[project]
+name = "hybrid-ai"
+version = "2.0.0.dev0"
+requires-python = ">=3.11"
+dependencies = [
+    "customtkinter",
+    "openai",
+    "python-dotenv",
+    "pillow",
+    "pypdf",
+    "python-docx",
+    "openpyxl",
+    "pytest",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = ["venv", ".claude", "*_backup.py"]
+
+[tool.ruff.lint]
+select = ["E", "F"]
