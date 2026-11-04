@@ -6,6 +6,12 @@ Needs Ollama running with: `llama3.1:8b`, `qwen2.5-coder:7b`, `qwen2.5vl:7b`, `n
 Keys (optional) in `%LOCALAPPDATA%\HybridAI\.env`: Gemini, Groq.
 Install: `venv\Scripts\python -m pip install -r requirements.txt --timeout 120 --retries 10`
 
+## Logs
+App log: `%LOCALAPPDATA%\HybridAI\logspp.log` (rotates at 1 MB, 5 old files kept).
+Level: set the environment variable `HYBRIDAI_LOG_LEVEL` to `DEBUG`, `INFO` (default), `WARNING` or `ERROR`
+before starting the app, e.g. `set HYBRIDAI_LOG_LEVEL=DEBUG` then `launch.bat`. Unknown values mean INFO.
+DEBUG also writes the per-tick lines that INFO hides.
+
 ## Tests
 `python -m pytest tests -q` → expected 66 passed, 1 skipped (Tk-free; widgets are stubbed).
 Files: test_core, test_editor, test_memory, test_context, test_codeexplain, test_quickask, test_phone, test_reminders, test_internship.

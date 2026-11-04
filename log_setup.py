@@ -20,10 +20,20 @@ def log_path():
     return os.path.join(config.DATA_DIR, "logs", "app.log")
 
 
+LEVEL_ENV = "HYBRIDAI_LOG_LEVEL"
+_LEVELS = {"DEBUG": logging.DEBUG, "INFO": logging.INFO,
+           "WARNING": logging.WARNING, "ERROR": logging.ERROR}
+
+
+def log_level():
+    """Level from HYBRIDAI_LOG_LEVEL (DEBUG, INFO, WARNING, ERROR); INFO if unset or unknown."""
+    return _LEVELS.get(os.environ.get(LEVEL_ENV, "").strip().upper(), logging.INFO)
+
+
 def setup():
     """Attach the rotating file handler (once) and return the logger."""
     logger = logging.getLogger(LOGGER_NAME)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(log_level())
     if any(getattr(h, _TAG, False) for h in logger.handlers):
         return logger
     path = log_path()

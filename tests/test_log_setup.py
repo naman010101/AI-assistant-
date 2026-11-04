@@ -76,3 +76,15 @@ def test_setup_safe_survives_a_logging_failure(monkeypatch, capsys):
     monkeypatch.setattr(log_setup, "setup", boom)
     assert log_setup.setup_safe() is None  # no exception escapes
     assert "file logging is off" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, logging.INFO), ("DEBUG", logging.DEBUG), ("debug", logging.DEBUG),
+    ("WARNING", logging.WARNING), ("nonsense", logging.INFO), ("", logging.INFO),
+])
+def test_log_level_from_environment(logger, monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv(log_setup.LEVEL_ENV, raising=False)
+    else:
+        monkeypatch.setenv(log_setup.LEVEL_ENV, value)
+    assert log_setup.setup().level == expected
