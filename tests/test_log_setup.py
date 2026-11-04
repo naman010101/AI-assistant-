@@ -13,9 +13,19 @@ import config  # noqa: E402
 import log_setup  # noqa: E402
 
 
-@pytest.fixture
-def logger(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def private_data(tmp_path, monkeypatch):
+    """Point every data path at a temp folder so nothing here can read the real
+    .env in the real private data folder (router.py calls config.load_env() on import)."""
+    monkeypatch.setenv("HYBRID_AI_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "ENV_PATH", str(tmp_path / ".env"))
+    monkeypatch.setattr(config, "LEGACY_ENV", str(tmp_path / "legacy.env"))
+    return tmp_path
+
+
+@pytest.fixture
+def logger(private_data):
     lg = logging.getLogger("hybridai")
     saved = list(lg.handlers)
     lg.handlers = []
