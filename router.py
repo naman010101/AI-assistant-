@@ -5,6 +5,8 @@ import time
 import threading
 from openai import OpenAI
 import config
+import settings
+import privacy
 
 config.load_env()  # API keys live in the private data folder (see config.py)
 
@@ -25,17 +27,34 @@ groq_client = OpenAI(
 )
 
 # --- Models ---
+# Cloud model IDs live in settings.py (DEFAULTS["cloud_models"]); local ones here.
+_CLOUD_IDS = settings.cloud_models()
 MODELS = {
     "local-general": ("llama3.1:8b", local_client),
     "local-coder": ("qwen2.5-coder:7b", local_client),
     "local-vision": ("qwen2.5vl:7b", local_client),   # can see images
-    "cloud-gemini": ("gemini-2.0-flash", gemini_client),
-    "cloud-groq": ("llama-3.3-70b-versatile", groq_client),
+    "cloud-gemini": (_CLOUD_IDS["cloud-gemini"], gemini_client),
+    "cloud-groq": (_CLOUD_IDS["cloud-groq"], groq_client),
 }
 
 # Models that can read images. The others get text only.
 VISION_MODELS = {"local-vision", "cloud-gemini"}
 DEFAULT_MODEL = "local-general"
+
+# Shown to the user when a cloud model failed and a local one answered instead.
+FALLBACK_NOTICE = "Answered locally: cloud unavailable"
+_FALLBACK_SUFFIX = f" ({FALLBACK_NOTICE})"
+
+
+def is_fallback(route_name):
+    """True for a route name made by a cloud failure, e.g.
+    'local-general (Answered locally: cloud unavailable)'."""
+    return bool(route_name) and route_name.endswith(_FALLBACK_SUFFIX)
+
+
+def is_fallback_notice(text):
+    """True for the notice text streamed ahead of a fallback answer."""
+    return text.startswith(f"[{FALLBACK_NOTICE}]")
 
 # --- Classification (NOT USED by the app right now) ---
 #
@@ -237,11 +256,14 @@ def for_model(route_name, messages):
 
 def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
                 model_override=None, should_stop=None, on_route=None, content=None, system=None,
-                fit_args=None, on_context=None):
+                fit_args=None, on_context=None, mask_cloud=True, on_masked=None):
     """`content` (optional) is what the model receives for this turn: the
     prompt plus attached file text, or a list of parts with images. Without
     it, the plain prompt is sent. `system` (optional) is an instruction sent
-    first but not stored in the history (e.g. how to propose file edits)."""
+    first but not stored in the history (e.g. how to propose file edits).
+    Cloud models get a masked copy (privacy.py) unless mask_cloud is False;
+    on_masked(report) says what was masked. The reply is un-masked while it
+    streams, and local models always get the unmasked text."""
     route_name, reason = route(prompt, mode, model_override)
     if on_route:
         on_route(route_name, reason)
@@ -254,16 +276,42 @@ def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
     full_response = ""   # what the user sees
     answer = ""          # what is saved to history (no notices or errors)
 
+    masker, unmasker = None, None
+
+    def flush_unmasker():
+        """Pass on any text held back while looking for a split placeholder."""
+        if unmasker is not None and on_token:
+            tail = unmasker.flush()
+            if tail:
+                on_token(tail)
+
     try:
-        answer, _ = _stream(client, model_id, prepare(route_name, messages, system, fit_args, on_context),
-                            on_token, should_stop)
+        payload = prepare(route_name, messages, system, fit_args, on_context)
+        stream_token = on_token
+        if mask_cloud and client is not local_client:
+            payload, masker = privacy.mask_messages(payload)
+            report = masker.report()
+            if report and on_masked:
+                on_masked(report)
+            if masker.has_items and on_token:
+                unmasker = privacy.Unmasker(masker)
+
+                def stream_token(tok):
+                    out = unmasker.feed(tok)
+                    if out:
+                        on_token(out)
+        answer, _ = _stream(client, model_id, payload, stream_token, should_stop)
+        flush_unmasker()
+        if masker is not None:
+            answer = masker.unmask(answer)
         full_response = answer
 
     except Exception as e:
         logging.getLogger("hybridai").error(
             "model stream failed (route=%s)", route_name, exc_info=True)
+        flush_unmasker()
         if "cloud" in route_name and not (should_stop and should_stop()):
-            notice = "[Cloud unavailable, falling back to local]\n\n"
+            notice = f"[{FALLBACK_NOTICE}]\n\n"
             full_response = notice
             if on_token:
                 on_token(notice)
@@ -273,7 +321,7 @@ def stream_chat(messages, prompt, mode="manual", on_token=None, on_done=None,
                                     prepare(fallback, messages, system, fit_args),
                                     on_token, should_stop)
                 full_response += answer
-                route_name = f"{fallback} (fallback)"
+                route_name = fallback + _FALLBACK_SUFFIX
                 reason = f"{reason} → cloud error, fell back"
             except Exception as e2:
                 logging.getLogger("hybridai").error(

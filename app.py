@@ -24,10 +24,17 @@ import time
 import urllib.request
 import uuid
 
-import customtkinter as ctk
-
 import config
-import log_setup
+
+if __name__ == "__main__":
+    # Before Tk loads, any folder is created or any database opened: a second
+    # copy shows a message, focuses the first window and exits.
+    import startup
+    startup.ensure_single_copy()
+
+import customtkinter as ctk  # noqa: E402
+
+import log_setup  # noqa: E402
 
 log_setup.setup_safe()
 
@@ -36,7 +43,8 @@ log = logging.getLogger("hybridai")
 # Move data that older versions kept in the project folder BEFORE anything
 # reads it (router.py loads the API keys on import).
 try:
-    MIGRATION_NOTES = config.migrate_legacy()
+    import startup
+    MIGRATION_NOTES = startup.migrate_or_exit()
 except Exception as _e:  # never stop the app over this; report it in the log
     log.exception("couldn't move old data out of the project folder")
     MIGRATION_NOTES = [f"could not move old data: {_e}"]
@@ -45,6 +53,7 @@ import attachments  # noqa: E402
 import context  # noqa: E402
 import editor  # noqa: E402
 import memory  # noqa: E402
+import privacy  # noqa: E402
 import quickask  # noqa: E402
 import router  # noqa: E402
 import access  # noqa: E402
@@ -100,7 +109,7 @@ class HybridAIApp(ctk.CTk):
         super().__init__(fg_color=C["bg"])
         Fonts.init()
 
-        self.title("Hybrid AI Assistant")
+        self.title(config.WINDOW_TITLE)
         self.geometry("1320x820")
         self.minsize(980, 620)
         try:
@@ -270,6 +279,11 @@ class HybridAIApp(ctk.CTk):
             self.store = None
             self.inspector.add_log(f"could not open chat history: {e}", "warn")
             return
+        if self.store.upgrade_note:
+            ok = self.store.version == 2
+            self.inspector.add_log(self.store.upgrade_note, None if ok else "warn")
+            if not ok:
+                self.composer.show_notice(self.store.upgrade_note, "warn", seconds=15)
         for c in saved:
             conv = Conversation(c["id"], c["title"], c["history"], c["turns"], c["created"], c.get("meta"))
             self.conversations[conv.id] = conv
@@ -331,6 +345,8 @@ class HybridAIApp(ctk.CTk):
                         self._show_edits(conv, i, msg)
                     if t.get("memory"):
                         msg.set_memory(t["memory"], self.open_memory)
+                    if t.get("masked"):
+                        msg.set_masked(t["masked"])
             self.after(120, self.chat.go_bottom)  # after every message has its final height
         self._update_header()
 
@@ -499,7 +515,9 @@ class HybridAIApp(ctk.CTk):
                 choice = dialogs.ask(
                     self, f"Send files to {provider}?",
                     f"{model_label(model)} is a cloud model. The contents of these attachments will "
-                    f"leave this laptop:", [("send", "Send"), ("cancel", "Cancel")],
+                    f"leave this laptop."
+                    + (" Emails, keys and paths in the text are masked first. Images are sent as they are."
+                       if self.settings.get("privacy_filter", True) else ""), [("send", "Send"), ("cancel", "Cancel")],
                     primary="cancel", detail=names)
                 if choice != "send":
                     return None
@@ -577,6 +595,9 @@ class HybridAIApp(ctk.CTk):
 
         fit_args = {"budget": int(self.settings.get("context_tokens", 8192)),
                     "digest": conv.meta.get("digest"), "digest_upto": conv.meta.get("digest_upto", 0)}
+        mask_cloud = bool(self.settings.get("privacy_filter", True))
+        if not mask_cloud and where(model) == "Cloud":
+            self.inspector.add_log("privacy filter is off: this message goes to the cloud unmasked", "warn")
 
         def on_context(info):
             if info["dropped"] or info["digest_used"]:
@@ -605,7 +626,8 @@ class HybridAIApp(ctk.CTk):
                             on_route=lambda r, why: q.put((gen_id, "route", r, why)),
                             model_override=model, should_stop=stop_event.is_set,
                             content=content, system=sys_text, fit_args=fit_args,
-                            on_context=on_context)
+                            on_context=on_context, mask_cloud=mask_cloud,
+                            on_masked=lambda r: q.put((gen_id, "masked", r)))
             except Exception as e:  # anything stream_chat didn't catch itself
                 log.exception("error before the model stream started")
                 q.put((gen_id, "tok", f"\n\nError: {e}"))
@@ -653,6 +675,8 @@ class HybridAIApp(ctk.CTk):
                         routed = ev[2:]
                     elif ev[1] == "memory":
                         self.gen["memory"] = ev[2]
+                    elif ev[1] == "masked":
+                        self.gen["masked"] = ev[2]
                     else:
                         done = ev[2:]
                 # events from an older generation are ignored
@@ -702,9 +726,9 @@ class HybridAIApp(ctk.CTk):
     def _on_tokens(self, text, n):
         g = self.gen
         now = time.perf_counter()
-        # The router's "[Cloud unavailable…]" notice isn't model output, so it
+        # The router's "Answered locally: cloud unavailable" notice isn't model output, so it
         # mustn't count as the first token.
-        is_notice_only = text.startswith("[Cloud unavailable") and text.endswith("\n\n")
+        is_notice_only = router.is_fallback_notice(text) and text.endswith("\n\n")
         if g["first"] is None and not is_notice_only:
             g["first"] = now
             g["msg"].set_streaming(g["route"])
@@ -747,6 +771,10 @@ class HybridAIApp(ctk.CTk):
         if g.get("memory"):
             turn["memory"] = g["memory"]
             g["msg"].set_memory(g["memory"], self.open_memory)
+        if g.get("masked"):
+            turn["masked"] = {k: v for k, v in g["masked"].items() if k != "items"}  # counts only
+            g["msg"].set_masked(g["masked"])
+            self.inspector.add_log("masked before sending: " + privacy.describe(g["masked"]), "cloud")
         conv.turns.append(turn)
         if turn.get("edits"):
             self._show_edits(conv, len(conv.turns) - 1, g["msg"])
@@ -764,7 +792,7 @@ class HybridAIApp(ctk.CTk):
         self.inspector.set_route(model_label(route_name), reason)
         self.inspector.set_stats(f"{ttft:.1f} s" if ttft is not None else "—",
                                  f"{speed:.0f}" if speed else "—", f"{elapsed_ms / 1000:.1f} s")
-        if "fallback" in route_name:
+        if router.is_fallback(route_name):
             self.session["fallback"] += 1
             self.inspector.add_log(f"cloud failed → fell back to {route_name.split(' ')[0]}", "warn")
         self.session["local" if where(route_name) == "Local" else "cloud"] += 1
@@ -784,6 +812,7 @@ class HybridAIApp(ctk.CTk):
     def _open_memory_store(self):
         try:
             self.mem = memory.MemoryStore(config.MEMORY_DB)
+            self.inspector.add_log(f"memory search: {self.mem.backend} backend")
         except Exception as e:
             self.mem = None
             self.inspector.add_log(f"memory unavailable: {e}", "warn")
@@ -821,13 +850,12 @@ class HybridAIApp(ctk.CTk):
                 if sm["id"] not in have and len(hits) < max(k, memory.RECENT_FOR_RECALL):
                     hits.append((0.0, sm))
         block = memory.context_block(hits, facts)
-        n_sum = self.mem.summaries()
-        indexed = sum(1 for sm in n_sum if sm["vector"])
+        n_sum, indexed = self.mem.counts()
         q.put(("log", f"memory: {len(facts)} fact{'s' if len(facts) != 1 else ''}, "
                       f"{len(hits)} session{'s' if len(hits) != 1 else ''} sent"
                       + (f" (best match {best:.2f}, needs {threshold:.2f})" if best is not None else "")
                       + (" · recall question: added recent sessions" if recall else "")
-                      + f" · {indexed}/{len(n_sum)} summaries searchable" + note,
+                      + f" · {indexed}/{n_sum} summaries searchable" + note,
                "warn" if note or (n_sum and not indexed) else None))
         return block, [{"id": sm["id"], "title": sm["title"]} for _, sm in hits]
 
@@ -996,7 +1024,7 @@ class HybridAIApp(ctk.CTk):
             self.sidebar.set_status("Phone", "unknown", "off")
             return
         import phone
-        srv = phone.PhoneServer(self, port=int(cfg.get("port", 8765)), lan=cfg.get("lan", True))
+        srv = phone.PhoneServer(self, port=int(cfg.get("port", 8765)), lan=cfg.get("lan", False))
         if srv.start():
             self.phone = srv
             self.sidebar.set_status("Phone", "ok", f"port {srv.port}")
@@ -1015,12 +1043,18 @@ class HybridAIApp(ctk.CTk):
         webbrowser.open(f"http://localhost:{int(cfg.get('port', 8765))}/pair")
 
     def reset_phone_token(self):
+        choice = dialogs.ask(self, "Reset phone token?", "Every paired phone will be disconnected and must pair again.",
+                             [("reset", "Reset token"), ("cancel", "Cancel")], primary="cancel")
+        if choice != "reset":
+            return
         if self.phone:
             self.phone.reset_token()
         else:
             import phone
             phone.load_token(new=True)
         self.inspector.add_log("phone: all paired phones disconnected (pair again with the new QR code)", "warn")
+        dialogs.info(self, "Phone token reset",
+                     "Phone token reset. Click 'Pair a phone (QR)' and open the new link on your phone.")
 
     def _reload_conv(self, conv_id):
         """A chat changed on the phone: take the saved version."""
@@ -1307,7 +1341,7 @@ class HybridAIApp(ctk.CTk):
             on_open_in_app=self.import_quick_chat, on_replace=self._replace_selection)
 
     def quick_ask_worker(self, ctx, history, question, action, use_screen, use_sel,
-                         on_token, on_done, should_stop, on_model):
+                         on_token, on_done, should_stop, on_model, on_notice=None):
         """One Quick Ask answer (worker thread). Captured content (screen,
         selection) goes to a local model unless 'Files and the cloud' is set
         to Always send."""
@@ -1351,11 +1385,19 @@ class HybridAIApp(ctk.CTk):
             except Exception:
                 system = None
         on_model(model)
+
+        def on_masked(report):
+            text = "masked before sending: " + privacy.describe(report)  # counts only, never values
+            self.events.put(("log", "Quick Ask: " + text))
+            if on_notice:
+                on_notice(text.capitalize())
+
         try:
             stream_chat(history, question or action or "Explain this", "manual", on_token=on_token,
                         on_done=lambda r, why, ms: on_done(r), model_override=model,
                         should_stop=should_stop, content=content, system=system,
-                        fit_args={"budget": int(self.settings.get("context_tokens", 8192))})
+                        fit_args={"budget": int(self.settings.get("context_tokens", 8192))},
+                        mask_cloud=bool(self.settings.get("privacy_filter", True)), on_masked=on_masked)
         except Exception as e:
             on_token(f"\n\nError: {e}")
             on_done(model)

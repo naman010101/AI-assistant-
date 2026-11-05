@@ -5,10 +5,14 @@ breaks the app; new options added later simply appear with their default.
 """
 import copy
 import json
+import logging
 import os
+import shutil
 import threading
 
 import config
+
+log = logging.getLogger("hybridai")
 
 
 def _default_folders():
@@ -26,6 +30,12 @@ def _default_folders():
 
 DEFAULTS = {
     "model": "local-general",      # chosen in the Run tab; never picked automatically
+    # Cloud model IDs, by the router's model key. Change them here when a
+    # provider retires a model; the router reads them when the app starts.
+    "cloud_models": {
+        "cloud-gemini": "gemini-3.8-flash",
+        "cloud-groq": "openai/gpt-oss-120b",
+    },
     "show_meta": True,
     "autoscroll": True,
     # How many tokens the local models can take in at once. Must match Ollama's
@@ -34,6 +44,9 @@ DEFAULTS = {
     # When a message with files or images goes to a cloud model:
     # "ask" = confirm each time, "block" = never, "allow" = send.
     "cloud_files": "ask",
+    # Replace emails, keys, tokens, secret values and file paths with placeholders
+    # before text goes to a cloud model (privacy.py). Images can't be masked.
+    "privacy_filter": True,
     "memory": {
         "enabled": True,           # search past-session summaries for context
         "cloud": False,            # also send that context to cloud models
@@ -52,7 +65,7 @@ DEFAULTS = {
     "phone": {
         "enabled": False,          # off until you turn it on in Settings → Phone
         "port": 8765,
-        "lan": True,               # reachable over Wi-Fi/Tailscale IP; off = only via `tailscale serve`
+        "lan": False,              # reachable over Wi-Fi/Tailscale IP; off = only via `tailscale serve`
         "public_url": "",          # e.g. https://laptop.tail1234.ts.net from `tailscale serve`
     },
     "brief": {"enabled": True, "time": "08:00", "last": None},
@@ -80,6 +93,19 @@ def _merge(base, over):
     return out
 
 
+def cloud_models(path=None):
+    """The cloud model IDs (settings.json over DEFAULTS), read-only: unlike
+    Settings(), this never writes the file. Used by router.py at import."""
+    try:
+        with open(path or config.SETTINGS_PATH, encoding="utf-8") as f:
+            over = json.load(f)
+    except (OSError, ValueError):
+        over = {}
+    if not isinstance(over, dict):
+        over = {}
+    return _merge(DEFAULTS, over)["cloud_models"]
+
+
 class Settings:
     def __init__(self, path=None):
         self.path = path or config.SETTINGS_PATH
@@ -97,8 +123,22 @@ class Settings:
             if self.data.get("memory", {}).get("threshold") == 0.55:
                 self.data["memory"]["threshold"] = 0.5
             self.data["settings_version"] = 1
-            if os.path.exists(self.path):
-                self.save()
+            changed = True
+        else:
+            changed = False
+        if v < 2:  # phone.lan now defaults to off (step 1.3)
+            ph = self.data.get("phone", {})
+            if not ph.get("enabled"):
+                ph["lan"] = False  # the server is off, so nothing breaks
+            elif ph.get("lan"):
+                log.warning("Phone is reachable on Wi-Fi; turn it off in Settings -> Phone for safety.")
+            self.data["settings_version"] = 2
+            changed = True
+        if changed and os.path.exists(self.path):
+            bak = os.path.join(os.path.dirname(self.path), "settings.v1.bak")
+            if not os.path.exists(bak):
+                shutil.copy2(self.path, bak)  # back up before the upgrade saves
+            self.save()
 
     def _read(self):
         try:

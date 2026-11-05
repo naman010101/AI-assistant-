@@ -12,7 +12,9 @@ What the phone gets
 
 Security
   - Every API call needs the pairing token (Authorization: Bearer …), kept in
-    the private data folder. "Disconnect all phones" in Settings makes a new one.
+    the private data folder. "Reset phone token" in Settings makes a new one.
+  - Download/attach links and upload ids are signed with the token and expire
+    after LINK_TTL seconds.
   - Files are only downloadable through links this server signed, and only
     if Settings → Access still allows them.
   - The pairing page (/pair) only opens on the laptop itself.
@@ -39,6 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import attachments
 import config
+import privacy
 import reminders
 import router
 import tools
@@ -51,9 +54,10 @@ MOBILE_DIR = os.path.join(BASE_DIR, "mobile")
 TOKEN_FILE = os.path.join(config.DATA_DIR, "phone_token.txt")
 UPLOAD_DIR = os.path.join(config.DATA_DIR, "phone_uploads")
 SHOTS_DIR = os.path.join(config.DATA_DIR, "phone_shots")
+LINK_TTL = 3600  # seconds a signed link or upload id stays valid
 MAX_UPLOAD = 25 * 1024 * 1024
 MODEL_NAMES = {"local-general": "Llama 3.1 8B", "local-coder": "Qwen Coder 7B", "local-vision": "Qwen 2.5 VL 7B",
-               "cloud-gemini": "Gemini 2.0 Flash", "cloud-groq": "Groq · Llama 3.3 70B", "laptop": "Laptop"}
+               "cloud-gemini": "Gemini 3.8 Flash", "cloud-groq": "Groq · GPT-OSS 120B", "laptop": "Laptop"}
 
 for ext, ctype in ((".js", "text/javascript"), (".css", "text/css"), (".webmanifest", "application/manifest+json"),
                    (".svg", "image/svg+xml"), (".png", "image/png"), (".json", "application/json")):
@@ -65,8 +69,10 @@ def load_token(new=False):
     if not token:
         token = secrets.token_urlsafe(24)
         os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
-        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+        tmp = TOKEN_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(token)
+        os.replace(tmp, TOKEN_FILE)  # atomic: never a half-written token
     return token
 
 
@@ -109,7 +115,7 @@ class PhoneServer:
     def __init__(self, host, port=8765, lan=True, db_path=None):
         self.host, self.port, self.lan = host, port, lan
         self.token = load_token()
-        self.store = Store(db_path or config.DB_PATH)
+        self.store = Store(db_path or config.DB_PATH, upgrade=False)  # only the desktop app upgrades (1.5)
         self.busy = threading.Lock()          # one phone reply at a time
         self.busy_conv = None
         self.httpd = None
@@ -148,16 +154,32 @@ class PhoneServer:
         return out
 
     # ---------- signing ----------
-    def sign(self, path, kind="f"):
-        return hmac.new(self.token.encode(), f"{kind}:{path}".encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+    def sign(self, path, kind, exp):
+        msg = f"v2|{kind}|{exp}|{path}"
+        return hmac.new(self.token.encode(), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def make_sig(self, path, kind, now=None):
+        exp = int((time.time() if now is None else now) + LINK_TTL)
+        return exp, self.sign(path, kind, exp)
+
+    def check_link(self, path, kind, exp, sig, now=None):
+        """"ok", "expired" or "invalid". The signature is checked before the time."""
+        exp = str(exp)
+        if not (exp.isascii() and exp.isdigit()):
+            return "invalid"
+        if not hmac.compare_digest(self.sign(path, kind, exp), str(sig)):
+            return "invalid"
+        return "expired" if (time.time() if now is None else now) > int(exp) else "ok"
 
     def file_link(self, path):
         path = os.path.abspath(path)
-        return "/api/file?" + urllib.parse.urlencode({"p": path, "s": self.sign(path)})
+        exp, sig = self.make_sig(path, "f")
+        return "/api/file?" + urllib.parse.urlencode({"p": path, "e": exp, "s": sig})
 
     def ask_link(self, path):
         path = os.path.abspath(path)
-        return "attach:" + urllib.parse.urlencode({"p": path, "s": self.sign(path, "a")})
+        exp, sig = self.make_sig(path, "a")
+        return "attach:" + urllib.parse.urlencode({"p": path, "e": exp, "s": sig})
 
     def file_allowed(self, path):
         """Downloads: our own shots/uploads, or files Access allows right now."""
@@ -321,14 +343,16 @@ class Handler(BaseHTTPRequestHandler):
         except attachments.AttachError as e:
             os.remove(path)
             return self._send(415, {"error": str(e)})
-        return self._send(200, {"id": self.srv.sign(path, "u") + ":" + os.path.basename(path),
+        exp, sig = self.srv.make_sig(path, "u")
+        return self._send(200, {"id": f"{sig}:{exp}:{os.path.basename(path)}",
                                 "name": name, "kind": att.kind, "detail": att.detail})
 
     def _resolve_upload(self, uid):
-        sig, _, base = uid.partition(":")
+        sig, _, rest = uid.partition(":")
+        exp, _, base = rest.partition(":")
         for day in sorted(os.listdir(UPLOAD_DIR), reverse=True) if os.path.isdir(UPLOAD_DIR) else []:
             path = os.path.join(UPLOAD_DIR, day, base)
-            if os.path.isfile(path) and hmac.compare_digest(self.srv.sign(path, "u"), sig):
+            if os.path.isfile(path) and self.srv.check_link(path, "u", exp, sig) == "ok":
                 return path
         return None
 
@@ -356,8 +380,10 @@ class Handler(BaseHTTPRequestHandler):
         for link in body.get("attach") or []:
             q = urllib.parse.parse_qs(str(link).split(":", 1)[-1])
             path, sig = (q.get("p") or [""])[0], (q.get("s") or [""])[0]
-            if not path or not hmac.compare_digest(srv.sign(path, "a"), sig):
-                problems.append("a file link wasn't valid")
+            state = srv.check_link(path, "a", (q.get("e") or [""])[0], sig) if path else "invalid"
+            if state != "ok":
+                problems.append("a file link expired, run /find again" if state == "expired"
+                                else "a file link wasn't valid")
                 continue
             ok, reason = host.gate.check(path, "read")
             if not ok:
@@ -438,6 +464,8 @@ class Handler(BaseHTTPRequestHandler):
                         on_route=lambda r, why: events.put(("route", r)),
                         on_done=lambda r, why, ms: events.put(("done", r, ms)),
                         model_override=model, should_stop=gone.is_set, content=content, system=system,
+                        mask_cloud=bool(st.get("privacy_filter", True)),
+                        on_masked=lambda r: events.put(("masked", r)),
                         fit_args={"budget": int(st.get("context_tokens", 8192)),
                                   "digest": (conv.get("meta") or {}).get("digest"),
                                   "digest_upto": (conv.get("meta") or {}).get("digest_upto", 0)})
@@ -454,12 +482,14 @@ class Handler(BaseHTTPRequestHandler):
                     emit({"type": "ping"})  # keeps mobile networks from dropping the stream
                     continue
                 if ev[0] == "tok":
-                    if first["t"] is None and not ev[1].startswith("[Cloud unavailable"):
+                    if first["t"] is None and not router.is_fallback_notice(ev[1]):
                         first["t"] = time.time()
                     answer += ev[1]
                     emit({"type": "token", "text": ev[1]})
                 elif ev[0] == "route":
                     emit({"type": "route", "model": ev[1], "label": label(ev[1]), "where": place(ev[1])})
+                elif ev[0] == "masked":
+                    emit({"type": "notice", "text": "Masked before sending: " + privacy.describe(ev[1])})
                 else:
                     route_name, elapsed = ev[1], ev[2]
                     break
@@ -484,7 +514,10 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- files ----------
     def _file(self, qs):
         path, sig = (qs.get("p") or [""])[0], (qs.get("s") or [""])[0]
-        if not path or not hmac.compare_digest(self.srv.sign(path), sig):
+        state = self.srv.check_link(path, "f", (qs.get("e") or [""])[0], sig) if path else "invalid"
+        if state == "expired":
+            return self._send(403, {"error": "link expired - run the command again on the phone"})
+        if state != "ok":
             return self._send(403, {"error": "link not valid"})
         if not os.path.isfile(path):
             return self._send(404, {"error": "file no longer exists"})

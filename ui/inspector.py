@@ -253,7 +253,7 @@ class Inspector(ctk.CTkFrame):
             switch("Let my phone connect", "Starts the phone server on this laptop",
                    lambda: ph.get("enabled", False), lambda v: set_ph("enabled", v))
             switch("Reachable on Wi-Fi / Tailscale IP", "Off: only through `tailscale serve` (safest)",
-                   lambda: ph.get("lan", True), lambda v: set_ph("lan", v))
+                   lambda: ph.get("lan", False), lambda v: set_ph("lan", v))
             note("Tailscale HTTPS address (from `tailscale serve`), needed to install the app and use "
                  "Share on Android:")
             url = ctk.CTkEntry(p, height=30, corner_radius=8, font=Fonts.mono(11), fg_color=C["card"],
@@ -268,10 +268,11 @@ class Inspector(ctk.CTkFrame):
             ctk.CTkButton(row, text="Pair a phone (QR)", height=32, corner_radius=8, font=Fonts.ui(12, "bold"),
                           fg_color=C["accent"], hover_color=C["accent_hi"], text_color=C["on_accent"],
                           command=self.on_pair).pack(side="left")
-            ctk.CTkButton(row, text="Disconnect all phones", height=32, corner_radius=8, font=Fonts.ui(12),
+            ctk.CTkButton(row, text="Reset phone token", height=32, corner_radius=8, font=Fonts.ui(12),
                           fg_color="transparent", hover_color=C["stop_bg"], border_width=1,
                           border_color=C["stop_border"], text_color=C["stop_fg"],
                           command=self.on_reset_phone).pack(side="left", padx=(8, 0))
+            note("Reset phone token: disconnects every paired phone and makes all links invalid.")
 
         # ---- Quick Ask ----
         if st:
@@ -367,6 +368,9 @@ class Inspector(ctk.CTkFrame):
             seg.grid(row=row_next(), column=0, sticky="ew", padx=12, pady=(6, 0))
             seg.set({"ask": "Ask each time", "block": "Never send", "allow": "Always send"}
                     .get(st.get("cloud_files", "ask"), "Ask each time"))
+            switch("Mask private data", "Emails, keys, passwords and file paths in the text are replaced "
+                   "before it goes to a cloud model. Images can't be masked.",
+                   lambda: st.get("privacy_filter", True), lambda v: on_setting("privacy_filter", v))
 
             label("Context size")
             note("How much text the local models can take in at once. Must match Ollama's "

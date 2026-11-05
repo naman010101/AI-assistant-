@@ -24,9 +24,9 @@
 <body>
 <main>
   <h1>Pair your phone</h1>
-  <p>Scan a code with your Android phone's camera, then open the link. Keep this page private: anyone with the link can use your assistant until you press “Disconnect all phones” in Settings.</p>
+  <p>Scan a code with your Android phone's camera, then open the link. Keep this page private: anyone with the link can use your assistant until you press “Reset phone token” in Settings.</p>
   <div id="grid" class="grid"></div>
-  <p id="none" class="warn" hidden>No network address found. Connect to Wi-Fi or Tailscale, or turn on “Reachable on Wi-Fi / Tailscale IP”.</p>
+  <p id="none" class="warn" hidden>No address to show. Run `tailscale serve --bg 8765`, paste the https address into Settings → Phone, then pair again. Or turn on “Reachable on Wi-Fi / Tailscale IP” in Settings.</p>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>

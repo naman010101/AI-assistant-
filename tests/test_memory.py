@@ -147,7 +147,7 @@ def test_settings_upgrade_threshold(tmp_path, monkeypatch):
     importlib.reload(settings)
     (tmp_path / "settings.json").write_text(json.dumps({"memory": {"threshold": 0.55}, "access": {"folders": []}}))
     s = settings.Settings()
-    assert s.get("memory")["threshold"] == 0.5 and s.get("settings_version") == 1
+    assert s.get("memory")["threshold"] == 0.5 and s.get("settings_version") == 2
     s.set("memory", {**s.get("memory"), "threshold": 0.62})
     assert settings.Settings().get("memory")["threshold"] == 0.62  # user's own value kept
 
@@ -178,3 +178,224 @@ def test_old_facts_table_upgraded(tmp_path):
     con.commit(); con.close()
     mem = M.MemoryStore(str(p))
     assert mem.user_facts() == ["User is on Windows"]  # existing facts stay in use
+
+
+# ================================================================ step 1.6: vector index
+import glob  # noqa: E402
+import random  # noqa: E402
+import sqlite3  # noqa: E402
+
+import pytest  # noqa: E402
+
+import vectors  # noqa: E402
+
+OLD_SCHEMA = """
+CREATE TABLE summaries (id TEXT PRIMARY KEY, conv_id TEXT, title TEXT NOT NULL, data TEXT NOT NULL,
+    started REAL, created REAL NOT NULL, vector TEXT, model TEXT);
+CREATE TABLE facts (id TEXT PRIMARY KEY, text TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'user',
+    pinned INTEGER NOT NULL DEFAULT 0, source TEXT, created REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active');
+"""
+
+
+def make_old_db(path, n=40, dim=16):
+    """A memory.db as it was before 1.6 (no index tables). Every 5th summary has no vector."""
+    rng = random.Random(5)
+    con = sqlite3.connect(path)
+    con.executescript(OLD_SCHEMA)
+    for i in range(n):
+        vec = M.normalise([rng.gauss(0, 1) for _ in range(dim)])
+        con.execute("INSERT INTO summaries VALUES (?, 'c', ?, ?, NULL, ?, ?, 'fake')",
+                    (f"s{i}", f"Title {i}", json.dumps({"bullets": [f"b{i}"]}), 1000.0 + i,
+                     json.dumps(vec) if i % 5 else None))
+    con.execute("INSERT INTO facts VALUES ('f1', 'User likes tea', 'user', 0, NULL, 1, 'active')")
+    con.commit()
+    con.close()
+
+
+def raw_vectors(path):
+    con = sqlite3.connect(path)
+    try:
+        return con.execute("SELECT id, vector FROM summaries ORDER BY id").fetchall()
+    finally:
+        con.close()
+
+
+def tables(path):
+    con = sqlite3.connect(path)
+    try:
+        return {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        con.close()
+
+
+def backups(tmp_path):
+    return sorted(glob.glob(str(tmp_path / "backups" / "memory-before-1.6-*.db")))
+
+
+def fake_embed16(texts, kind="document"):
+    return [M.normalise([1.0] + [0.0] * 15) for _ in texts]
+
+
+@pytest.fixture(params=vectors.available())
+def backend(request, monkeypatch):
+    monkeypatch.setenv(vectors.ENV_VAR, request.param)
+    return request.param
+
+
+def old_formula(mem, q, k, threshold):
+    rows = [s for s in mem.summaries() if s["vector"]]
+    scored = sorted(((M.dot(q, s["vector"]), s) for s in rows), key=lambda x: -x[0])
+    return [(sim, s) for sim, s in scored[:k] if threshold is None or sim >= threshold]
+
+
+def test_search_matches_old_formula_on_each_backend(tmp_path, backend):
+    mem = M.MemoryStore(str(tmp_path / "m.db"))
+    assert mem.backend == backend
+    rng = random.Random(3)
+    words = VOCAB + ["alpha", "beta", "gamma", "delta", "sigma", "omega"]
+    for i in range(300):
+        text = " ".join(rng.choice(words) for _ in range(6))
+        mem.add_summary(f"c{i}", summary(f"S{i}", [text]), fake_embed, embed_model="fake")
+    for query in ("pip venv windows", "graph bfs queue", "pizza cricket", "alpha beta omega exam"):
+        q = fake_embed([query], kind="query")[0]
+        for threshold in (None, 0.3):
+            got = mem.search(query, fake_embed, k=5, threshold=threshold)
+            want = old_formula(mem, q, 5, threshold)
+            # float32 can reorder scores that tie to ~1e-7, so compare scores, and ids only where not tied
+            assert len(got) == len(want)
+            exact = {s["id"]: sim for sim, s in old_formula(mem, q, 10 ** 6, None)}
+            assert all(abs(sim - exact[s["id"]]) < 1e-5 for sim, s in got)
+            assert all(abs(a - b) < 1e-5 for (a, _), (b, _) in zip(got, want))
+            assert [a for a, _ in got] == sorted((a for a, _ in got), reverse=True)
+            cut = want[-1][0] if want else 0
+            assert {s["id"] for sim, s in old_formula(mem, q, 10 ** 6, None) if sim > cut + 1e-5} \
+                <= {s["id"] for _, s in got}
+
+
+def test_index_follows_delete_update_and_embed_missing(tmp_path, backend):
+    mem = M.MemoryStore(str(tmp_path / "m.db"))
+
+    def broken(texts, kind="document"):
+        raise ConnectionError("ollama offline")
+
+    a = mem.add_summary("c1", summary("Pip", ["pip venv"]), fake_embed, embed_model="fake")
+    b = mem.add_summary("c2", summary("BFS", ["bfs graph"]), fake_embed, embed_model="fake")
+    c = mem.add_summary("c3", summary("Offline", ["cricket"]), broken)
+    assert mem.vec.keys() == {a, b} and mem.counts() == (3, 2)
+    mem.delete_summary(a)
+    assert mem.vec.keys() == {b}
+    # an update whose embedding fails drops the vector, so the summary can't match stale text
+    mem.update_summary(b, "BFS", {"bullets": ["bfs"], "open_items": [], "tags": [], "facts": [], "files": []},
+                       broken, "fake")
+    assert mem.vec.keys() == set() and mem.counts() == (2, 0)
+    assert mem.search("bfs graph", fake_embed) == []
+    assert mem.embed_missing(fake_embed, "fake") == 2
+    assert mem.vec.keys() == {b, c} and mem.counts() == (2, 2)
+    assert mem.search("bfs graph", fake_embed)[0][1]["id"] == b
+
+
+def test_embedding_length_change_rebuilds_index(tmp_path):
+    mem = M.MemoryStore(str(tmp_path / "m.db"))
+    a = mem.add_summary("c1", summary("A", ["pip"]), fake_embed, embed_model="fake")
+    b = mem.add_summary("c2", summary("B", ["bfs"]), fake_embed, embed_model="fake")
+
+    def wide(texts, kind="document"):
+        return [[1.0] * 5 for _ in texts]
+
+    mem.update_summary(b, "B", {"bullets": ["bfs"], "open_items": [], "tags": [], "facts": [], "files": []},
+                       wide, "wide")
+    assert mem.vec.dim == 5 and mem.vec.keys() == {b}      # a's old-length vector is left out
+    assert mem.get_summary(a)["vector"] is not None         # but still stored (source of truth)
+    assert mem.search("anything", wide, threshold=None)[0][1]["id"] == b
+
+
+def test_migration_from_old_db(tmp_path, backend):
+    p = str(tmp_path / "m.db")
+    make_old_db(p)
+    before = raw_vectors(p)
+    mem = M.MemoryStore(p)
+    made = backups(tmp_path)
+    assert len(made) == 1 and not glob.glob(str(tmp_path / "backups" / "*.partial"))
+    bk = sqlite3.connect(made[0])
+    assert bk.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert bk.execute("SELECT COUNT(*) FROM summaries").fetchone()[0] == 40
+    assert bk.execute("SELECT COUNT(*) FROM facts").fetchone()[0] == 1
+    names = {r[0] for r in bk.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not {"vec_summaries", "vec_meta"} & names        # the backup is the OLD layout
+    bk.close()
+    n_vec = sum(1 for _, v in before if v)
+    assert mem.vec.count() == n_vec == mem.counts()[1]
+    assert raw_vectors(p) == before                          # JSON untouched
+    mem.close()
+    mem2 = M.MemoryStore(p)                                  # second open: no new backup
+    assert len(backups(tmp_path)) == 1 and mem2.vec.count() == n_vec
+
+
+def test_new_empty_db_needs_no_backup(tmp_path):
+    mem = M.MemoryStore(str(tmp_path / "m.db"))
+    assert mem.vec is not None and not backups(tmp_path)
+
+
+def test_failure_mid_fill_changes_nothing_then_next_open_works(tmp_path, monkeypatch):
+    p = str(tmp_path / "m.db")
+    make_old_db(p)
+    before = raw_vectors(p)
+    real = vectors.VectorStore.upsert
+    calls = []
+
+    def boom(self, key, vec):
+        calls.append(key)
+        if len(calls) == 5:
+            raise RuntimeError("injected")
+        return real(self, key, vec)
+
+    monkeypatch.setattr(vectors.VectorStore, "upsert", boom)
+    mem = M.MemoryStore(p)
+    assert mem.vec is None and mem.backend == "python (no index)"
+    assert "vec_meta" not in tables(p) and "vec_summaries" not in tables(p)
+    assert raw_vectors(p) == before
+    assert mem.search("x", fake_embed16, k=3, threshold=None)       # search still works
+    mem.close()
+    monkeypatch.setattr(vectors.VectorStore, "upsert", real)
+    mem2 = M.MemoryStore(p)
+    assert mem2.vec is not None and mem2.vec.count() == sum(1 for _, v in before if v)
+    assert len(backups(tmp_path)) == 2                              # the re-run backs up again
+
+
+def test_failed_backup_creates_no_tables_and_search_works(tmp_path):
+    p = str(tmp_path / "m.db")
+    make_old_db(p)
+    before = raw_vectors(p)
+    (tmp_path / "backups").write_text("a file where the folder should be")   # makedirs will fail
+    mem = M.MemoryStore(p)
+    assert mem.vec is None
+    assert "vec_meta" not in tables(p) and "vec_summaries" not in tables(p)
+    assert raw_vectors(p) == before
+    hits = mem.search("anything", fake_embed16, k=3, threshold=None)
+    assert len(hits) == 3 and all(s["vector"] for _, s in hits)
+    mem.add_summary("cx", summary("New", ["new"]), fake_embed16, embed_model="fake")   # writes still work
+    assert mem.counts() == (41, 33)
+
+
+def test_sync_repairs_a_drifted_index(tmp_path):
+    p = str(tmp_path / "m.db")
+    make_old_db(p)
+    mem = M.MemoryStore(p)
+    full = mem.vec.count()
+    mem._db.execute("DELETE FROM vec_summaries WHERE key IN ('s1', 's2')")
+    mem._db.execute("INSERT INTO vec_summaries (key, v) VALUES ('ghost', x'00000000')")
+    mem._db.commit()
+    mem.close()
+    mem2 = M.MemoryStore(p)
+    assert mem2.vec.count() == full and "ghost" not in mem2.vec.keys()
+    assert len(backups(tmp_path)) == 1
+
+
+def test_neither_backend_installed_memory_still_works(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "numpy", None)
+    monkeypatch.setitem(sys.modules, "sqlite_vec", None)
+    mem = M.MemoryStore(str(tmp_path / "m.db"))
+    assert mem.backend == "python"
+    a = mem.add_summary("c1", summary("Pip", ["pip venv windows"]), fake_embed, embed_model="fake")
+    assert mem.search("pip venv", fake_embed)[0][1]["id"] == a

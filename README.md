@@ -8,7 +8,7 @@ past sessions as short summaries — with your data kept on your laptop.
 ## Features
 
 - **You choose the model.** Llama 3.1 8B, Qwen 2.5 Coder 7B and Qwen 2.5 VL 7B
-  run locally; Gemini 2.0 Flash and Groq Llama 3.3 70B are optional. Nothing
+  run locally; Gemini 3.8 Flash and Groq GPT-OSS 120B are optional. Nothing
   leaves the laptop unless you pick a cloud model.
 - **Private by design.** Chats, memory, settings, backups and API keys live in
   `%LOCALAPPDATA%\HybridAI`, never in the project folder. An access gate limits

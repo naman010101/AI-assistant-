@@ -81,13 +81,22 @@ MODEL_INFO = {
     "local-general": {"name": "Llama 3.1 8B", "desc": "General chat, private", "where": "Local"},
     "local-coder": {"name": "Qwen Coder 7B", "desc": "Code, refactors", "where": "Local"},
     "local-vision": {"name": "Qwen 2.5 VL 7B", "desc": "Sees images and screenshots", "where": "Local"},
-    "cloud-gemini": {"name": "Gemini 2.0 Flash", "desc": "Long context, research", "where": "Cloud"},
-    "cloud-groq": {"name": "Groq · Llama 3.3 70B", "desc": "Fast, high quality", "where": "Cloud"},
+    "cloud-gemini": {"name": "Gemini 3.8 Flash", "desc": "Long context, research", "where": "Cloud"},
+    "cloud-groq": {"name": "Groq · GPT-OSS 120B", "desc": "Fast, high quality", "where": "Cloud"},
 }
 
 
+# Same text as router.FALLBACK_NOTICE (kept here so the theme needn't import the router).
+FALLBACK_NOTICE = "Answered locally: cloud unavailable"
+
+
+def is_fallback(route_name):
+    """True for a fallback route; also matches ' (fallback)' saved by v1 chats."""
+    return bool(route_name) and route_name.endswith((f" ({FALLBACK_NOTICE})", " (fallback)"))
+
+
 def model_label(route_name):
-    """'local-general (fallback)' -> 'Llama 3.1 8B (fallback)'."""
+    """'local-general (Answered locally: cloud unavailable)' -> 'Llama 3.1 8B (Answered locally: cloud unavailable)'."""
     base = route_name.split(" ")[0]
     info = MODEL_INFO.get(base)
     if not info:
