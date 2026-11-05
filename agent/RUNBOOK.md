@@ -23,7 +23,7 @@ The upgrade keeps a copy of the old chats in `%LOCALAPPDATA%\HybridAIackups\cha
 2. In `%LOCALAPPDATA%\HybridAI`, move `chats.db`, `chats.db-wal` and `chats.db-shm` into `backupsfter-1.5\` (do not delete them: they hold chats made since the upgrade).
 3. Copy `backups\chats-v1-<timestamp>.db` to `%LOCALAPPDATA%\HybridAI\chats.db`.
 4. Check out the commit from before 1.5 (the 1.5 code would just upgrade again).
-Chats made after the upgrade are lost unless copied over by hand. Backups are never deleted automatically.
+Chats made after the upgrade are lost unless copied over by hand. The chats-v1 backup is deleted automatically 30 days after the upgrade (logged in the Log tab), so roll back within 30 days or copy it somewhere safe first.
 
 ## Start-up switches (tests only)
 `HYBRIDAI_NO_DIALOGS=1` makes `startup.py` print its messages ("already running", migration stopped) to stderr instead of opening a message box, and skips focusing the other window. Used by `tests/test_startup.py`; always set it, with `HYBRID_AI_DATA_DIR` pointing at a temp folder, when running `app.py` from a test or CI. Do not set it for normal use.

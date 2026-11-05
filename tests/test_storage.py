@@ -404,3 +404,106 @@ def test_masked_counts_survive_a_restart(tmp_path, upgrade):
     s = Store(p, upgrade=upgrade)
     assert s.get("m")["turns"][1]["masked"] == masked
     assert "masked" not in s.get("m")["turns"][0]
+
+
+# ---------- 1.5b: old migration backups are deleted after 30 days ----------
+def _stamp(days_ago):
+    return time.strftime("%Y%m%d-%H%M%S", time.localtime(time.time() - days_ago * 86400))
+
+
+def _v2_store_dir(tmp_path):
+    p = str(tmp_path / "chats.db")
+    Store(p).close()
+    (tmp_path / "backups").mkdir(exist_ok=True)
+    return p, tmp_path / "backups"
+
+
+def test_old_backup_deleted_logged_and_noted(tmp_path, caplog):
+    p, bd = _v2_store_dir(tmp_path)
+    old = bd / f"chats-v1-{_stamp(31)}.db"
+    old2 = bd / f"chats-v1-{_stamp(45)}-2.db"
+    old.write_text("x")
+    old2.write_text("x")
+    with caplog.at_level("INFO", logger="storage"):
+        s = Store(p)
+    try:
+        assert not old.exists() and not old2.exists()
+        assert f"deleted chat backup {old.name} (older than 30 days)" in s.upgrade_note
+        assert f"deleted chat backup {old.name} (older than 30 days)" in caplog.text
+    finally:
+        s.close()
+
+
+def test_recent_backup_kept(tmp_path):
+    p, bd = _v2_store_dir(tmp_path)
+    new = bd / f"chats-v1-{_stamp(29)}.db"
+    new.write_text("x")
+    s = Store(p)
+    s.close()
+    assert new.exists() and s.upgrade_note == ""
+
+
+def test_other_backup_files_untouched(tmp_path):
+    p, bd = _v2_store_dir(tmp_path)
+    keep = [bd / "memory-before-1.6-20200101-000000.db", bd / "unrelated.txt",
+            bd / "chats-v1-20200101-000000.db.partial", bd / "chats-v1-notes.txt"]
+    for f in keep:
+        f.write_text("x")
+    folder = bd / "migration-20200101-000000"
+    folder.mkdir()
+    (folder / "chats-v1-20200101-000000.db").write_text("x")
+    Store(p).close()
+    assert all(f.exists() for f in keep)
+    assert (folder / "chats-v1-20200101-000000.db").exists()
+
+
+def test_v1_mode_deletes_nothing(tmp_path):
+    p = str(tmp_path / "chats.db")
+    make_v1(p)
+    bd = tmp_path / "backups"
+    bd.mkdir()
+    old = bd / "chats-v1-20200101-000000.db"
+    old.write_text("x")
+    s = Store(p, upgrade=False)
+    s.close()
+    assert s.version == 1 and old.exists()
+
+
+def test_upgrade_false_deletes_nothing(tmp_path):
+    p, bd = _v2_store_dir(tmp_path)
+    old = bd / "chats-v1-20200101-000000.db"
+    old.write_text("x")
+    Store(p, upgrade=False).close()
+    assert old.exists()
+
+
+def test_failed_upgrade_stays_v1_and_deletes_nothing(tmp_path, monkeypatch):
+    p = str(tmp_path / "chats.db")
+    make_v1(p)
+    bd = tmp_path / "backups"
+    bd.mkdir()
+    old = bd / "chats-v1-20200101-000000.db"
+    old.write_text("x")
+
+    def boom(*a, **k):
+        raise OSError("no")
+    monkeypatch.setattr(storage, "_migrate_v1", boom)
+    s = Store(p)
+    s.close()
+    assert s.version == 1 and old.exists()
+
+
+def test_delete_failure_is_logged_and_does_not_raise(tmp_path, monkeypatch, caplog):
+    p, bd = _v2_store_dir(tmp_path)
+    old = bd / "chats-v1-20200101-000000.db"
+    old.write_text("x")
+
+    def deny(path, *a, **k):
+        raise PermissionError("in use")
+    monkeypatch.setattr(storage.os, "remove", deny)
+    with caplog.at_level("WARNING", logger="storage"):
+        s = Store(p)
+    s.close()
+    assert old.exists()
+    assert "couldn't delete old chat backup chats-v1-20200101-000000.db" in caplog.text
+    assert "deleted chat backup" not in s.upgrade_note

@@ -19,6 +19,7 @@ upgrade fails, the app keeps working on the old layout ("version 1 mode").
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import threading
@@ -27,6 +28,7 @@ import time
 log = logging.getLogger("hybridai")
 
 SCHEMA_VERSION = 2
+BACKUP_KEEP_DAYS = 30  # the chats-v1 migration backup is deleted after this many days
 
 # The old (version 1) layout. Kept for databases that have not been upgraded.
 SCHEMA = """
@@ -182,6 +184,47 @@ def _backup(path, backup_dir):
         raise
 
 
+_BACKUP_NAME = re.compile(r"^chats-v1-(\d{8}-\d{6})(?:-\d+)?\.db$")
+
+
+def _backup_time(name, full):
+    """When a chats-v1 backup was made: the timestamp in its name, else the file's mtime."""
+    m = _BACKUP_NAME.match(name)
+    if m:
+        try:
+            return time.mktime(time.strptime(m.group(1), "%Y%m%d-%H%M%S"))
+        except (ValueError, OverflowError):
+            log.warning("couldn't read the date in backup name %s; using the file date", name)
+    return os.path.getmtime(full)
+
+
+def _delete_old_backups(backup_dir, now=None):
+    """Delete chats-v1-*.db files older than BACKUP_KEEP_DAYS. Returns the deleted names.
+    Never raises; touches nothing else in backup_dir."""
+    deleted = []
+    try:
+        if not os.path.isdir(backup_dir):
+            return deleted
+        now = time.time() if now is None else now
+        cutoff = now - BACKUP_KEEP_DAYS * 86400
+        for name in sorted(os.listdir(backup_dir)):
+            if not _BACKUP_NAME.match(name):
+                continue
+            full = os.path.join(backup_dir, name)
+            try:
+                if not os.path.isfile(full) or _backup_time(name, full) >= cutoff:
+                    continue
+                os.remove(full)
+            except OSError:
+                log.warning("couldn't delete old chat backup %s", name, exc_info=True)
+                continue
+            log.info("deleted chat backup %s (older than %d days)", name, BACKUP_KEEP_DAYS)
+            deleted.append(name)
+    except OSError:
+        log.warning("couldn't look for old chat backups in %s", backup_dir, exc_info=True)
+    return deleted
+
+
 def _remove_stale_partials(backup_dir):
     if not os.path.isdir(backup_dir):
         return
@@ -280,12 +323,18 @@ class Store:
             self._db.execute("PRAGMA foreign_keys = ON")
             self._db.execute("PRAGMA journal_mode = WAL")  # lets another process read while we write
             self._db.execute("PRAGMA synchronous = NORMAL")
+            bdir = backup_dir or os.path.join(os.path.dirname(path), "backups")
             if self.version == 1 and upgrade:
-                self._upgrade(backup_dir or os.path.join(os.path.dirname(path), "backups"))
+                self._upgrade(bdir)
             if self.version == 0:
                 self._create_v2()
             if self.version == 1:
                 self._v1_open()
+            elif upgrade and self.version == 2:
+                gone = _delete_old_backups(bdir)
+                if gone:
+                    note = "; ".join(f"deleted chat backup {n} (older than {BACKUP_KEEP_DAYS} days)" for n in gone)
+                    self.upgrade_note = (self.upgrade_note + " " + note).strip()
         except BaseException:
             self._db.close()
             raise
