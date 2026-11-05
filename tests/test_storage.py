@@ -388,3 +388,19 @@ def test_speed_2000_chats(tmp_path, capsys):
         print(f"\n[1.5 timing] get median: fresh v2 {fresh:.2f} ms, migrated {migrated:.2f} ms, "
               f"v1 direct lookup at 200 chats {v1_ms:.2f} ms; migrating {n} chats incl. backup {took:.2f} s")
     assert fresh < 50 and migrated < 50
+
+
+@pytest.mark.parametrize("upgrade", [True, False])
+def test_masked_counts_survive_a_restart(tmp_path, upgrade):
+    """1.4 follow-up: the 'Masked before sending' counts are saved with the turn."""
+    p = str(tmp_path / "chats.db")
+    if not upgrade:
+        make_v1(p)  # v1 mode keeps them too
+    masked = {"counts": {"api_key": 1, "path": 2}}
+    turns = [{"role": "user", "text": "q"},
+             {"role": "assistant", "text": "a", "route": "cloud-groq", "masked": masked}]
+    s = Store(p, upgrade=upgrade)
+    s.save("m", "t", [{"role": "user", "content": "q"}], turns)
+    s = Store(p, upgrade=upgrade)
+    assert s.get("m")["turns"][1]["masked"] == masked
+    assert "masked" not in s.get("m")["turns"][0]
