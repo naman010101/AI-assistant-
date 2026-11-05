@@ -15,9 +15,10 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print(f"memory file: {'found' if __import__('os').path.exists(config.MEMORY_DB) else 'NOT FOUND'}")
     mem = memory.MemoryStore(config.MEMORY_DB)
-    sums = mem.summaries()
+    total, searchable = mem.counts()
     facts = mem.facts()
-    print(f"summaries: {len(sums)} · searchable (have an embedding): {sum(1 for s in sums if s['vector'])}")
+    print(f"search backend: {mem.backend}")
+    print(f"summaries: {total} · searchable (have an embedding): {searchable}")
     print(f"facts: {len(facts)} ({sum(1 for f in facts if f['kind'] == 'user')} about you, "
           f"{sum(1 for f in facts if f['pinned'])} pinned) · sent with every message: {len(mem.user_facts())}")
     embed = memory.ollama_embedder()
@@ -28,7 +29,7 @@ def main():
         print(f"embedding model ({embed.model}): NOT working: {type(e).__name__}: {e}")
         print(f"  fix: ollama pull {embed.model}")
         return
-    missing = sum(1 for s in sums if not s["vector"])
+    missing = total - searchable
     if missing:
         n = mem.embed_missing(embed, embed.model)
         print(f"indexed {n} summaries that weren't searchable yet")

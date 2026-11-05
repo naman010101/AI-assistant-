@@ -812,6 +812,7 @@ class HybridAIApp(ctk.CTk):
     def _open_memory_store(self):
         try:
             self.mem = memory.MemoryStore(config.MEMORY_DB)
+            self.inspector.add_log(f"memory search: {self.mem.backend} backend")
         except Exception as e:
             self.mem = None
             self.inspector.add_log(f"memory unavailable: {e}", "warn")
@@ -849,13 +850,12 @@ class HybridAIApp(ctk.CTk):
                 if sm["id"] not in have and len(hits) < max(k, memory.RECENT_FOR_RECALL):
                     hits.append((0.0, sm))
         block = memory.context_block(hits, facts)
-        n_sum = self.mem.summaries()
-        indexed = sum(1 for sm in n_sum if sm["vector"])
+        n_sum, indexed = self.mem.counts()
         q.put(("log", f"memory: {len(facts)} fact{'s' if len(facts) != 1 else ''}, "
                       f"{len(hits)} session{'s' if len(hits) != 1 else ''} sent"
                       + (f" (best match {best:.2f}, needs {threshold:.2f})" if best is not None else "")
                       + (" · recall question: added recent sessions" if recall else "")
-                      + f" · {indexed}/{len(n_sum)} summaries searchable" + note,
+                      + f" · {indexed}/{n_sum} summaries searchable" + note,
                "warn" if note or (n_sum and not indexed) else None))
         return block, [{"id": sm["id"], "title": sm["title"]} for _, sm in hits]
 

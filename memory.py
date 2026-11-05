@@ -19,13 +19,20 @@ Everything here stays on the laptop: summaries are written by the local
 model, stored in memory.db in the private data folder, and only sent to a
 cloud model if you switch that on in Settings.
 """
+import contextlib
 import json
+import logging
 import math
+import os
 import re
 import sqlite3
 import threading
 import time
 import uuid
+
+import vectors
+
+log = logging.getLogger("hybridai")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS summaries (
@@ -70,7 +77,6 @@ MIN_CHARS_TO_SUMMARISE = 30  # a chat that's only "hi" isn't worth remembering
 # ================================================================ store
 class MemoryStore:
     def __init__(self, path):
-        import os
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.path = path
         self._lock = threading.Lock()
@@ -82,6 +88,182 @@ class MemoryStore:
         if "status" not in cols:  # facts saved by the first version count as confirmed
             self._db.execute("ALTER TABLE facts ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
         self._db.commit()
+        self.vec = None          # derived search index (vectors.VectorStore); None = use the fallback
+        self._fallback = None    # JSON vectors loaded once, only while there is no index
+        self._open_index()
+
+    # ---------- derived vector index (step 1.6) ----------
+    # summaries.vector (JSON) stays the source of truth; vec_summaries is rebuilt from it.
+    @property
+    def backend(self):
+        return self.vec.backend if self.vec else "python (no index)"
+
+    @contextlib.contextmanager
+    def _write(self):
+        """Lock + one transaction. If it fails, the index's in-memory copy is dropped."""
+        with self._lock:
+            try:
+                with self._db:
+                    yield
+            except BaseException:
+                if self.vec:
+                    self.vec.invalidate()
+                raise
+            finally:
+                self._fallback = None
+
+    def _open_index(self):
+        try:
+            built = self._db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vec_meta'").fetchone() and \
+                self._db.execute("SELECT 1 FROM vec_meta WHERE name = 'summaries'").fetchone()
+            if built:
+                self.vec = vectors.VectorStore(self._db, "summaries")
+                self._sync()
+            else:
+                self._migrate_vectors()
+        except Exception:
+            log.exception("memory search index unavailable; searching without it")
+            self.vec = None
+
+    def _backup_before_vectors(self):
+        """Copy memory.db (with its WAL content) to <dir>/backups and check the copy.
+        Returns the path. On any problem raises, leaving no partial file."""
+        backup_dir = os.path.join(os.path.dirname(self.path), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        final = os.path.join(backup_dir, f"memory-before-1.6-{stamp}.db")
+        n = 1
+        while os.path.exists(final):
+            n += 1
+            final = os.path.join(backup_dir, f"memory-before-1.6-{stamp}-{n}.db")
+        partial = final + ".partial"
+        dst = None
+        try:
+            dst = sqlite3.connect(partial)
+            self._db.backup(dst)
+            if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise OSError("the backup copy failed its integrity check")
+            for table in ("summaries", "facts"):
+                a = self._db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                b = dst.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                if a != b:
+                    raise OSError(f"the backup copy has {b} rows in {table}, expected {a}")
+            dst.close()
+            dst = None
+            os.replace(partial, final)
+            return final
+        except BaseException:
+            if dst is not None:
+                try:
+                    dst.close()
+                except sqlite3.Error:
+                    log.exception("couldn't close the unfinished memory backup")
+            try:
+                if os.path.exists(partial):
+                    os.remove(partial)
+            except OSError:
+                log.exception("couldn't remove the unfinished backup %s", partial)
+            raise
+
+    def _migrate_vectors(self):
+        """First open with the index: back up memory.db, then build the index in ONE
+        transaction. If the backup fails nothing is created and search uses the fallback."""
+        has_data = self._db.execute("SELECT (SELECT COUNT(*) FROM summaries) + (SELECT COUNT(*) FROM facts)"
+                                    ).fetchone()[0]
+        if has_data:
+            t0 = time.time()
+            try:
+                dest = self._backup_before_vectors()
+            except Exception:
+                log.exception("memory.db backup failed; the search index was NOT built (will retry next start)")
+                return
+            log.info("memory.db backed up to %s in %.2fs", dest, time.time() - t0)
+        t0 = time.time()
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            vec = vectors.VectorStore(self._db, "summaries")
+            self._fill(vec, None)
+            self._db.commit()
+        except Exception:
+            self._db.rollback()
+            log.exception("building the memory search index failed; nothing was changed")
+            return
+        self.vec = vec
+        log.info("memory search index built: %d vectors in %.2fs (%s)", vec.count(), time.time() - t0,
+                 vec.backend)
+
+    def _sync(self):
+        """Make the index match the summaries that have vectors (adds/removes the difference)."""
+        with self._lock:
+            have = {r[0] for r in self._db.execute("SELECT id FROM summaries WHERE vector IS NOT NULL")}
+            indexed = self.vec.keys()
+            stale, missing = indexed - have, have - indexed
+            if not stale and not missing:
+                return
+            try:
+                with self._db:
+                    for sid in stale:
+                        self.vec.delete(sid)
+                    if missing:
+                        self._fill(self.vec, missing)
+            except BaseException:
+                self.vec.invalidate()
+                raise
+        log.info("memory search index synced: +%d -%d", len(missing), len(stale))
+
+    def _fill(self, vec, only_ids):
+        """Add the stored JSON vectors (only `only_ids`, or all) to `vec`. An empty index
+        takes the dimension of the newest vector; vectors of another length are left out."""
+        rows = []
+        for r in self._db.execute("SELECT id, vector FROM summaries WHERE vector IS NOT NULL "
+                                  "ORDER BY created ASC").fetchall():
+            if only_ids is not None and r["id"] not in only_ids:
+                continue
+            try:
+                rows.append((r["id"], json.loads(r["vector"])))
+            except ValueError:
+                log.warning("summary %s has an unreadable vector; left out of the index", r["id"])
+        rows = [(sid, v) for sid, v in rows if isinstance(v, list) and v]
+        if not rows:
+            return
+        if vec.count() == 0 and vec.dim != len(rows[-1][1]):
+            vec.reset(len(rows[-1][1]))
+        skipped = 0
+        for sid, v in rows:
+            if len(v) == vec.dim:
+                vec.upsert(sid, v)
+            else:
+                skipped += 1
+        if skipped:
+            log.warning("%d summaries have vectors of another length than the index (%s); left out",
+                        skipped, vec.dim)
+
+    def _index_put(self, sid, vec):
+        """Mirror a summary's vector into the index (inside the caller's transaction).
+        vec=None removes it. An index problem is logged and fixed by the next start's sync."""
+        if self.vec is None:
+            return
+        try:
+            if vec:
+                try:
+                    self.vec.upsert(sid, vec)
+                except vectors.DimensionMismatch:
+                    log.warning("embedding length changed to %d; rebuilding the search index", len(vec))
+                    self.vec.reset(len(vec))
+                    self._fill(self.vec, None)
+            else:
+                self.vec.delete(sid)
+        except Exception:
+            log.exception("couldn't update the memory search index for summary %s", sid)
+            self.vec.invalidate()
+
+    def counts(self):
+        """(all summaries, summaries that have an embedding), counted in SQL."""
+        with self._lock:
+            r = self._db.execute("SELECT COUNT(*), COALESCE(SUM(vector IS NOT NULL), 0) FROM summaries"
+                                 ).fetchone()
+        return r[0], r[1]
 
     # ---------- summaries ----------
     def add_summary(self, conv_id, summary, embed_fn=None, started=None, embed_model=None):
@@ -93,13 +275,15 @@ class MemoryStore:
             except Exception:
                 vec = None  # embedded later by embed_missing()
         data = {k: summary.get(k, []) for k in ("bullets", "facts", "open_items", "files", "tags")}
-        with self._lock, self._db:
+        with self._write():
             self._db.execute(
                 "INSERT INTO summaries (id, conv_id, title, data, started, created, vector, model) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (sid, conv_id, summary.get("title") or "Untitled session",
                  json.dumps(data, ensure_ascii=False), started, time.time(),
                  json.dumps(vec) if vec else None, embed_model if vec else None))
+            if vec:
+                self._index_put(sid, vec)
             # Facts the summariser pulled out wait for your OK: a wrong "fact"
             # would otherwise be sent with every message from now on.
             for fact in summary.get("facts", []):
@@ -125,14 +309,16 @@ class MemoryStore:
                 vec = embed_fn([summary_text({"title": title, **data})], kind="document")[0]
             except Exception:
                 vec = None
-        with self._lock, self._db:
+        with self._write():
             self._db.execute("UPDATE summaries SET title = ?, data = ?, vector = ?, model = ? WHERE id = ?",
                              (title, json.dumps(data, ensure_ascii=False),
                               json.dumps(vec) if vec else None, embed_model if vec else None, sid))
+            self._index_put(sid, vec)
 
     def delete_summary(self, sid, with_facts=True):
-        with self._lock, self._db:
+        with self._write():
             self._db.execute("DELETE FROM summaries WHERE id = ?", (sid,))
+            self._index_put(sid, None)
             if with_facts:
                 self._db.execute("DELETE FROM facts WHERE source = ? AND pinned = 0", (sid,))
 
@@ -145,9 +331,10 @@ class MemoryStore:
         for r in rows:
             s = self._row(r)
             vec = embed_fn([summary_text(s)], kind="document")[0]
-            with self._lock, self._db:
+            with self._write():
                 self._db.execute("UPDATE summaries SET vector = ?, model = ? WHERE id = ?",
                                  (json.dumps(vec), embed_model, s["id"]))
+                self._index_put(s["id"], vec)
             done += 1
         return done
 
@@ -222,13 +409,40 @@ class MemoryStore:
 
     def search(self, query, embed_fn, k=3, threshold=0.55):
         """Closest summaries to `query`: list of (similarity, summary).
-        threshold=None returns the top k whatever their similarity."""
-        rows = [s for s in self.summaries() if s["vector"]]
-        if not rows or not query.strip():
+        Takes the top k, then keeps those >= threshold (threshold=None keeps all k)."""
+        if not query.strip():
+            return []
+        with self._lock:
+            if self.vec is not None:
+                empty = self.vec.count() == 0
+            else:
+                if self._fallback is None:  # no index (backup failed): vectors from JSON, loaded once
+                    self._fallback = [(r["id"], json.loads(r["vector"])) for r in self._db.execute(
+                        "SELECT id, vector FROM summaries WHERE vector IS NOT NULL ORDER BY created ASC")]
+                empty = not self._fallback
+        if empty:
             return []
         q = embed_fn([query], kind="query")[0]
-        scored = sorted(((dot(q, s["vector"]), s) for s in rows), key=lambda x: -x[0])
-        return [(sim, s) for sim, s in scored[:k] if threshold is None or sim >= threshold]
+        with self._lock:
+            if self.vec is not None:
+                found = self.vec.search(q, k, threshold)
+            else:
+                found = self._search_fallback(q, k, threshold)
+            rows = {}
+            if found:
+                marks = ",".join("?" * len(found))
+                rows = {r["id"]: r for r in self._db.execute(
+                    f"SELECT * FROM summaries WHERE id IN ({marks})", [key for key, _ in found])}
+        return [(score, self._row(rows[key])) for key, score in found if key in rows]
+
+    def _search_fallback(self, q, k, threshold):
+        qn = vectors._normalised(q)
+        scored = []
+        for i, (sid, v) in enumerate(self._fallback):
+            if len(v) == len(qn):
+                scored.append((dot(qn, vectors._normalised(v)), i, sid))
+        scored.sort(key=lambda t: (-t[0], -t[1]))
+        return [(sid, s) for s, _, sid in scored[:k] if threshold is None or s >= threshold]
 
     def close(self):
         with self._lock:
